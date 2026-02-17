@@ -1256,8 +1256,13 @@ function setupEdgeSwipeBackGesture(){
   if (!rootPage || !detailPage) return;
 
   // iOS swipe-back
-  const EDGE_ZONE_PX = 12;
-  const DIRECTION_LOCK_PX = 10;
+  // Make swipe-back feel natural on large iPhone screens:
+  // - wider edge grab area
+  // - allow a bit more diagonal movement before cancelling
+  // - only decide intent after a tiny movement threshold
+  const EDGE_ZONE_PX = 28;
+  const DIRECTION_LOCK_PX = 12;
+  const INTENT_PX = 6;
   // Swipe release tuning: fast >=0.28 @ >=6%, medium >=0.20 @ >=12%, slow >=22%; cancel <8% & <0.20.
   const FAST_FLICK_VELOCITY = 0.28;
   const MEDIUM_FLICK_VELOCITY = 0.20;
@@ -1294,6 +1299,7 @@ function setupEdgeSwipeBackGesture(){
     lastX: 0,
     lastTime: 0,
     velocityX: 0,
+    velocityXSmooth: 0,
     width: 1,
     frame: null,
     usedInput: null,
@@ -1316,8 +1322,9 @@ function setupEdgeSwipeBackGesture(){
   const applyDragTransforms = ()=>{
     const dx = clampDx();
     const progress = dx / Math.max(1, gesture.width);
-    detailPage.style.transform = `translateX(${dx}px)`;
-    rootPage.style.transform = `translateX(${(-0.2 * gesture.width) + (dx * 0.12)}px)`;
+    // translate3d keeps it on the GPU and reduces stutter on iOS
+    detailPage.style.transform = `translate3d(${dx}px, 0, 0)`;
+    rootPage.style.transform = `translate3d(${(-0.2 * gesture.width) + (dx * 0.12)}px, 0, 0)`;
     dimOverlay.style.opacity = `${Math.max(0, 1 - progress)}`;
   };
 
@@ -1347,6 +1354,7 @@ function setupEdgeSwipeBackGesture(){
     rootPage.style.willChange = "";
     rootPage.style.overflowX = "";
     detailPage.style.overflowX = "";
+    detailPage.style.touchAction = "";
   };
 
   const resetGestureState = ()=>{
@@ -1367,10 +1375,13 @@ function setupEdgeSwipeBackGesture(){
     dimOverlay.style.transition = "none";
     detailPage.style.willChange = "transform";
     rootPage.style.willChange = "transform";
+    // Hint to the browser how this element will be panned.
+    // We still preventDefault once confirmed.
+    detailPage.style.touchAction = "pan-y";
     rootPage.style.overflowX = "hidden";
     detailPage.style.overflowX = "hidden";
-    rootPage.style.transform = `translateX(${-0.2 * gesture.width}px)`;
-    detailPage.style.transform = "translateX(0px)";
+    rootPage.style.transform = `translate3d(${-0.2 * gesture.width}px, 0, 0)`;
+    detailPage.style.transform = "translate3d(0px, 0, 0)";
     dimOverlay.style.opacity = "1";
   };
 
@@ -1378,8 +1389,8 @@ function setupEdgeSwipeBackGesture(){
     detailPage.style.transition = `transform ${SWIPE_DURATION_MS}ms ${SWIPE_EASING}`;
     rootPage.style.transition = `transform ${SWIPE_DURATION_MS}ms ${SWIPE_EASING}`;
     dimOverlay.style.transition = `opacity ${SWIPE_DURATION_MS}ms ${SWIPE_EASING}`;
-    detailPage.style.transform = `translateX(${targetX}px)`;
-    rootPage.style.transform = `translateX(${(-0.2 * gesture.width) + (targetX * 0.12)}px)`;
+    detailPage.style.transform = `translate3d(${targetX}px, 0, 0)`;
+    rootPage.style.transform = `translate3d(${(-0.2 * gesture.width) + (targetX * 0.12)}px, 0, 0)`;
     dimOverlay.style.opacity = `${Math.max(0, 1 - (targetX / Math.max(1, gesture.width)))}`;
     setTimeout(()=>{
       cleanupStyles();
@@ -1412,6 +1423,7 @@ function setupEdgeSwipeBackGesture(){
     gesture.lastX = x;
     gesture.lastTime = performance.now();
     gesture.velocityX = 0;
+    gesture.velocityXSmooth = 0;
     gesture.width = window.innerWidth || detailPage.clientWidth || 1;
     gesture.usedInput = inputType;
     gesture.scrollableY = findScrollableY(target);
@@ -1426,8 +1438,12 @@ function setupEdgeSwipeBackGesture(){
     const absDx = Math.abs(dx);
     const absDy = Math.abs(dy);
 
+    // Don’t decide anything until the user actually moved a little.
+    if (!gesture.confirmed && (absDx + absDy) < INTENT_PX) return;
+
     if (!gesture.confirmed){
-      const verticalDominant = absDy > DIRECTION_LOCK_PX && absDy > absDx;
+      // Be a bit tolerant: iOS users often swipe back with a small diagonal.
+      const verticalDominant = absDy > DIRECTION_LOCK_PX && absDy > (absDx * 1.25);
       const scrollingInsideList = Boolean(gesture.scrollableY && gesture.scrollableY.scrollTop > 0 && absDy > absDx);
       if (scrollingInsideList || verticalDominant){
         // iOS swipe-back: never hijack vertical scroll gestures in nested lists.
@@ -1435,14 +1451,17 @@ function setupEdgeSwipeBackGesture(){
         resetGestureState();
         return;
       }
-      if (absDx > DIRECTION_LOCK_PX && absDx > absDy && dx > 0) beginConfirmedSwipe();
+      if (dx > 0 && absDx > DIRECTION_LOCK_PX && absDx > (absDy * 1.1)) beginConfirmedSwipe();
       else return;
     }
 
     if (rawEvent?.cancelable) rawEvent.preventDefault();
     const now = performance.now();
     const dt = Math.max(1, now - gesture.lastTime);
-    gesture.velocityX = (x - gesture.lastX) / dt;
+    const vInst = (x - gesture.lastX) / dt;
+    // Smooth velocity so “flick” detection feels consistent and less jittery.
+    gesture.velocityXSmooth = (gesture.velocityXSmooth * 0.8) + (vInst * 0.2);
+    gesture.velocityX = gesture.velocityXSmooth;
     gesture.lastX = x;
     gesture.lastTime = now;
     gesture.currentX = x;
