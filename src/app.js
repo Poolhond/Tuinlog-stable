@@ -1263,11 +1263,11 @@ function setupEdgeSwipeBackGesture(){
   const EDGE_ZONE_PX = 28;
   const DIRECTION_LOCK_PX = 12;
   const INTENT_PX = 6;
-  // Swipe release tuning: fast >=0.28 @ >=6%, medium >=0.20 @ >=12%, slow >=22%; cancel <8% & <0.20.
-  const FAST_FLICK_VELOCITY = 0.28;
-  const MEDIUM_FLICK_VELOCITY = 0.20;
-  const FAST_FLICK_PROGRESS = 0.06;
-  const MEDIUM_FLICK_PROGRESS = 0.12;
+  // Swipe release tuning (px/ms):
+  // - fast flick should succeed even with short distance
+  // - slow drag succeeds at ~22% width
+  const FAST_FLICK_VELOCITY = 0.55;   // ~550px/s
+  const SUPER_FLICK_VELOCITY = 0.9;   // very fast, allow tiny distance
   const COMPLETE_PROGRESS = 0.22;
   const CANCEL_PROGRESS = 0.08;
   const SWIPE_DURATION_MS = 220;
@@ -1302,20 +1302,11 @@ function setupEdgeSwipeBackGesture(){
     velocityXSmooth: 0,
     width: 1,
     frame: null,
-    usedInput: null,
-    scrollableY: null
+    usedInput: null
   };
 
-  const findScrollableY = (el)=>{
-    let node = el;
-    while (node && node !== detailPage && node instanceof HTMLElement){
-      const style = getComputedStyle(node);
-      const canScrollY = (style.overflowY === "auto" || style.overflowY === "scroll") && node.scrollHeight > node.clientHeight;
-      if (canScrollY) return node;
-      node = node.parentElement;
-    }
-    return null;
-  };
+  // NOTE: We intentionally do NOT cancel swipe-back because of vertical movement.
+  // If the user starts from the left edge, we treat it as "grab back gesture".
 
   const clampDx = ()=> Math.max(0, Math.min(gesture.currentX - gesture.startX, gesture.width));
 
@@ -1365,7 +1356,6 @@ function setupEdgeSwipeBackGesture(){
     gesture.touchId = null;
     gesture.pointerId = null;
     gesture.usedInput = null;
-    gesture.scrollableY = null;
   };
 
   const beginConfirmedSwipe = ()=>{
@@ -1426,7 +1416,6 @@ function setupEdgeSwipeBackGesture(){
     gesture.velocityXSmooth = 0;
     gesture.width = window.innerWidth || detailPage.clientWidth || 1;
     gesture.usedInput = inputType;
-    gesture.scrollableY = findScrollableY(target);
     return true;
   };
 
@@ -1441,17 +1430,11 @@ function setupEdgeSwipeBackGesture(){
     // Don’t decide anything until the user actually moved a little.
     if (!gesture.confirmed && (absDx + absDy) < INTENT_PX) return;
 
+    // EDGE GRAB RULE:
+    // If the gesture started inside the left edge zone, we never cancel because of vertical movement.
+    // We confirm as soon as the user moves right a bit.
     if (!gesture.confirmed){
-      // Be a bit tolerant: iOS users often swipe back with a small diagonal.
-      const verticalDominant = absDy > DIRECTION_LOCK_PX && absDy > (absDx * 1.25);
-      const scrollingInsideList = Boolean(gesture.scrollableY && gesture.scrollableY.scrollTop > 0 && absDy > absDx);
-      if (scrollingInsideList || verticalDominant){
-        // iOS swipe-back: never hijack vertical scroll gestures in nested lists.
-        gesture.cancelled = true;
-        resetGestureState();
-        return;
-      }
-      if (dx > 0 && absDx > DIRECTION_LOCK_PX && absDx > (absDy * 1.1)) beginConfirmedSwipe();
+      if (dx > 0 && absDx > DIRECTION_LOCK_PX) beginConfirmedSwipe();
       else return;
     }
 
@@ -1477,10 +1460,12 @@ function setupEdgeSwipeBackGesture(){
     const velocityX = gesture.velocityX;
 
     if (dx <= 0) return cancelSwipe();
-    if (progress < CANCEL_PROGRESS && velocityX < MEDIUM_FLICK_VELOCITY) return cancelSwipe();
+    if (progress < CANCEL_PROGRESS && velocityX < FAST_FLICK_VELOCITY) return cancelSwipe();
 
-    if (velocityX >= FAST_FLICK_VELOCITY && progress >= FAST_FLICK_PROGRESS) return finishSwipe();
-    if (velocityX >= MEDIUM_FLICK_VELOCITY && progress >= MEDIUM_FLICK_PROGRESS) return finishSwipe();
+    // Very fast, short flick: succeed immediately (even small dx).
+    if (velocityX >= SUPER_FLICK_VELOCITY && dx >= 8) return finishSwipe();
+    // Fast flick: succeed with a small-but-visible movement.
+    if (velocityX >= FAST_FLICK_VELOCITY && dx >= 20) return finishSwipe();
     if (progress >= COMPLETE_PROGRESS) return finishSwipe();
 
     return cancelSwipe();
