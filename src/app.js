@@ -491,6 +491,18 @@ function statusClassFromStatus(s){
   if (s === "paid") return "status-paid";
   return "";
 }
+function logRowStatusClass(status){
+  if (status === "linked") return "rowStatus-linked";
+  if (status === "calculated") return "rowStatus-calculated";
+  if (status === "paid") return "rowStatus-paid";
+  return "rowStatus-free";
+}
+function settlementRowStatusClass(settlement){
+  const visual = getSettlementVisualState(settlement);
+  if (visual.state === "paid") return "rowStatus-paid";
+  if (visual.state === "calculated") return "rowStatus-open";
+  return "rowStatus-draft";
+}
 function getLogVisualState(log){
   const state = logStatus(log.id);
   if (state === "paid") return { state: "paid", color: "#00a05a" };
@@ -567,6 +579,7 @@ function getWorkLogStatus(logId){
 function renderLogCard(log){
   const st = getWorkLogStatus(log.id);
   const cls = statusClassFromStatus(st);
+  const rowStatus = logRowStatusClass(st);
   const startTime = getStartTime(log);
   const workDuration = getTotalWorkDuration(log);
   const extraProducts = countExtraProducts(log);
@@ -574,7 +587,7 @@ function renderLogCard(log){
   const amount = sumItemsAmount(log);
 
   return `
-    <div class="item ${cls}" data-open-log="${log.id}">
+    <div class="item listRow ${cls} ${rowStatus}" data-open-log="${log.id}">
       <div class="item-main">
         <div class="item-title">${esc(cname(log.customerId))}</div>
         <div class="meta-text" style="margin-top:2px;">
@@ -1578,6 +1591,7 @@ function renderSettlements(){
   const list = [...state.settlements].sort((a,b)=>(b.createdAt||0)-(a.createdAt||0)).map(s=>{
     const pay = settlementPaymentState(s);
     const visual = getSettlementVisualState(s);
+    const rowStatus = settlementRowStatusClass(s);
     const linkedLogs = (s.logIds||[])
       .map(id => state.logs.find(l => l.id === id))
       .filter(Boolean);
@@ -1585,7 +1599,7 @@ function renderSettlements(){
     const grand = round2(pay.invoiceTotal + pay.cashTotal);
 
     return `
-      <div class="item ${visual.accentClass}" data-open-settlement="${s.id}" role="button" tabindex="0">
+      <div class="item listRow ${visual.accentClass} ${rowStatus}" data-open-settlement="${s.id}" role="button" tabindex="0">
         <div class="item-main">
           <div class="item-title">${esc(cname(s.customerId))}</div>
           <div class="meta-text" style="margin-top:2px;">
@@ -2480,6 +2494,7 @@ function renderSettlementSheet(id){
         <div class="list" id="sLogs">
           ${availableLogs.slice(0,30).map(l=>{
             const checked = (s.logIds||[]).includes(l.id);
+            const rowStatus = logRowStatusClass(getWorkLogStatus(l.id));
             const rowMeta = `
               <div class="item-sub settlement-log-cols mono tabular">
                 <span class="log-col-date">${esc(formatDatePretty(l.date))}</span>
@@ -2488,10 +2503,10 @@ function renderSettlementSheet(id){
                 <span class="log-col-products">${countExtraProducts(l)}</span>
               </div>`;
             if (isEdit){
-              return `<label class="item item-compact"><div class="item-main">${rowMeta}</div><div class="item-right"><input type="checkbox" data-logpick="${l.id}" ${checked ? "checked" : ""}/></div></label>`;
+              return `<label class="item item-compact listRow ${rowStatus}"><div class="item-main">${rowMeta}</div><div class="item-right"><input type="checkbox" data-logpick="${l.id}" ${checked ? "checked" : ""}/></div></label>`;
             }
             if (!checked) return "";
-            return `<button class="item item-compact item-row-button" type="button" role="button" data-open-linked-log="${l.id}"><div class="item-main">${rowMeta}</div></button>`;
+            return `<button class="item item-compact item-row-button listRow ${rowStatus}" type="button" role="button" data-open-linked-log="${l.id}"><div class="item-main">${rowMeta}</div></button>`;
           }).join('') || `<div class="small">Geen gekoppelde logs.</div>`}
         </div>
       </div>
