@@ -2,6 +2,13 @@ import * as stateModule from './state.js';
 import { createNav } from './nav.js';
 import { createActions } from './actions.js';
 import { createRenderer } from './render.js';
+import * as compute from './compute.js';
+import { pad2, round2, fmtMoney, fmtClock, formatDurationCompact } from './utils/format.js';
+import { createStore } from './engine/store.js';
+import { rootReducer, initAppState } from './engine/reducer.js';
+import { createEffects } from './engine/effects.js';
+import * as engineActions from './engine/actions.js';
+import * as selectors from './engine/selectors.js';
 
 /* Tuinlog MVP — 5 boeken + detail sheets
    - Logboek: start/stop/pauze, items toevoegen
@@ -11,7 +18,6 @@ import { createRenderer } from './render.js';
    - Status kleuren: logs afgeleid van afrekening.status
 */
 
-const STORAGE_KEY = "tuinlog_mvp_v1";
 const $ = (s) => document.querySelector(s);
 const NAV_TRANSITION_MS = 240;
 const NAV_TRANSITION_EASING = "cubic-bezier(0.22, 0.61, 0.36, 1)";
@@ -23,15 +29,6 @@ const esc = (s) => String(s ?? "")
   .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
   .replaceAll('"',"&quot;").replaceAll("'","&#039;");
 
-function fmtMoney(n){
-  const v = Number(n||0);
-  return "€" + v.toFixed(2).replace(".", ",");
-}
-function pad2(n){ return String(n).padStart(2,"0"); }
-function fmtClock(ms){
-  const d = new Date(ms);
-  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-}
 function durMsToHM(ms){
   const m = Math.max(0, Math.floor(ms/60000));
   const h = Math.floor(m/60);
@@ -70,13 +67,6 @@ function formatMinutesAsDuration(totalMinutes){
   const m = minutes % 60;
   return `${h}u ${String(m).padStart(2, "0")}m`;
 }
-function formatDurationCompact(totalMinutes){
-  const minutes = Math.max(0, Math.floor(Number(totalMinutes) || 0));
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return `${h}u${String(m).padStart(2, "0")}m`;
-}
-function round2(n){ return Math.round((Number(n||0))*100)/100; }
 function formatDatePretty(isoDate){
   if (!isoDate) return "";
   const [y, m, d] = String(isoDate).split("-").map(Number);
@@ -193,197 +183,6 @@ function openTextConfirmModal({ title, message, expectedText, confirmText = "Def
   });
 }
 
-// ---------- State ----------
-function defaultState(){
-  return {
-    schemaVersion: 1,
-    settings: { hourlyRate: 38, vatRate: 0.21 },
-    customers: [
-      { id: uid(), nickname:"Van de Werf", name:"", address:"Heverlee, Leuven", createdAt: now() },
-      { id: uid(), nickname:"Kessel-Lo tuin", name:"", address:"Kessel-Lo, Leuven", createdAt: now() },
-    ],
-    products: [
-      { id: uid(), name:"Werk", unit:"uur", unitPrice:38, vatRate:0.21, defaultBucket:"invoice" },
-      { id: uid(), name:"Groen", unit:"keer", unitPrice:38, vatRate:0.21, defaultBucket:"invoice" },
-    ],
-    logs: [],
-    settlements: [],
-    activeLogId: null,
-    ui: {},
-    logbook: {
-      statusFilter: "open",
-      showFilters: false,
-      customerId: "all",
-      period: "all",
-      groupBy: "date",
-      sortDir: "desc"
-    }
-  };
-}
-
-function safeParseState(raw){
-  try {
-    return { ok: true, value: JSON.parse(raw) };
-  } catch {
-    return { ok: false };
-  }
-}
-
-function migrateState(st){
-  if (!st || typeof st !== "object" || Array.isArray(st)) return defaultState();
-
-  let version = Number.isInteger(st.schemaVersion) ? st.schemaVersion : 0;
-
-  while (version < 1){
-    switch (version){
-      case 0:
-        st.schemaVersion = 1;
-        version = 1;
-        break;
-      default:
-        st.schemaVersion = 1;
-        version = 1;
-        break;
-    }
-  }
-
-  if (!Number.isInteger(st.schemaVersion) || st.schemaVersion < 1) st.schemaVersion = 1;
-  return st;
-}
-
-function validateAndRepairState(st){
-  if (!st || typeof st !== "object" || Array.isArray(st)) return defaultState();
-
-  if (!Array.isArray(st.customers)) st.customers = [];
-  if (!Array.isArray(st.logs)) st.logs = [];
-  if (!Array.isArray(st.settlements)) st.settlements = [];
-  if (!Array.isArray(st.products)) st.products = [];
-  if (!st.settings || typeof st.settings !== "object" || Array.isArray(st.settings)) st.settings = {};
-  if (!st.ui || typeof st.ui !== "object" || Array.isArray(st.ui)) st.ui = {};
-
-  return st;
-}
-
-function ensureUIPreferences(st){
-  st.ui = st.ui || {};
-  st.logbook = st.logbook || {};
-
-  if (!["open", "paid", "all"].includes(st.logbook.statusFilter)){
-    st.logbook.statusFilter = ["open", "paid", "all"].includes(st.ui.logFilter) ? st.ui.logFilter : "open";
-  }
-  if (!("showFilters" in st.logbook)) st.logbook.showFilters = Boolean(st.ui.showLogFilters);
-  if (!("customerId" in st.logbook)) st.logbook.customerId = st.ui.logCustomerId || "all";
-  if (!("period" in st.logbook)){
-    const legacyMap = { "7d": "week", "30d": "30d", "90d": "month", "all": "all" };
-    st.logbook.period = legacyMap[st.ui.logPeriod] || "all";
-  }
-  if (!["all", "week", "month", "30d"].includes(st.logbook.period)) st.logbook.period = "all";
-  if (!["date", "customer", "workTime", "productTotal", "status"].includes(st.logbook.groupBy)) st.logbook.groupBy = "date";
-  if (!["desc", "asc"].includes(st.logbook.sortDir)) st.logbook.sortDir = "desc";
-
-  if (!("editLogId" in st.ui)) st.ui.editLogId = null;
-  if (!("editSettlementId" in st.ui)) st.ui.editSettlementId = null;
-  if (st.ui.settlementEditModes && !st.ui.editSettlementId){
-    const activeId = Object.entries(st.ui.settlementEditModes).find(([, isEditing]) => Boolean(isEditing))?.[0] || null;
-    st.ui.editSettlementId = activeId;
-  }
-  delete st.ui.settlementEditModes;
-  delete st.ui.logFilter;
-  delete st.ui.showLogFilters;
-  delete st.ui.logCustomerId;
-  delete st.ui.logPeriod;
-}
-
-function isSettlementEditing(settlementId){
-  return state.ui.editSettlementId === settlementId;
-}
-
-function toggleEditSettlement(settlementId){
-  actions.setEditSettlement(settlementId);
-}
-
-function ensureCoreProducts(st){
-  st.products = st.products || [];
-  const coreProducts = [
-    { name:"Werk", unit:"uur", unitPrice:38, vatRate:0.21, defaultBucket:"invoice" },
-    { name:"Groen", unit:"keer", unitPrice:38, vatRate:0.21, defaultBucket:"invoice" },
-  ];
-  for (const core of coreProducts){
-    const exists = st.products.find(p => (p.name||"").trim().toLowerCase() === core.name.toLowerCase());
-    if (!exists){
-      st.products.push({ id: uid(), ...core });
-    }
-  }
-}
-
-function loadState(){
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw){
-    const st = defaultState();
-    seedDemoMonths(st, { months: 3, force: false });
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(st));
-    return st;
-  }
-  const parsed = safeParseState(raw);
-  if (!parsed.ok){
-    const st = defaultState();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(st));
-    return st;
-  }
-  const st = validateAndRepairState(migrateState(parsed.value));
-
-  // migrations
-  if (!st.settings) st.settings = { hourlyRate: 38, vatRate: 0.21 };
-  if (!("hourlyRate" in st.settings)) st.settings.hourlyRate = 38;
-  if (!("vatRate" in st.settings)) st.settings.vatRate = 0.21;
-  if (!st.customers) st.customers = [];
-  if (!st.products) st.products = [];
-  if (!st.logs) st.logs = [];
-  if (!st.settlements) st.settlements = [];
-  if (!("activeLogId" in st)) st.activeLogId = null;
-  ensureUIPreferences(st);
-
-  for (const c of st.customers){
-    if (!("demo" in c)) c.demo = false;
-  }
-  for (const p of st.products){
-    if (!("demo" in p)) p.demo = false;
-  }
-
-  ensureCoreProducts(st);
-
-  // settlement status default
-  for (const s of st.settlements){
-    if (!s.status) s.status = "draft";
-    if (!s.lines) s.lines = [];
-    if (!s.logIds) s.logIds = [];
-    if (!("markedCalculated" in s)) s.markedCalculated = s.status === "calculated";
-    if (!("isCalculated" in s)) s.isCalculated = Boolean(s.markedCalculated || s.status === "calculated" || s.status === "paid" || s.calculatedAt);
-    if (!("calculatedAt" in s)) s.calculatedAt = s.isCalculated ? (s.createdAt || now()) : null;
-    if (!("invoicePaid" in s)) s.invoicePaid = false;
-    if (!("cashPaid" in s)) s.cashPaid = false;
-    if (!("invoiceAmount" in s)) s.invoiceAmount = 0;
-    if (!("cashAmount" in s)) s.cashAmount = 0;
-    syncSettlementAmounts(s);
-    if (!("demo" in s)) s.demo = false;
-  }
-  // log fields
-  for (const l of st.logs){
-    if (!l.segments) l.segments = [];
-    if (!l.items) l.items = [];
-    if (!l.date) l.date = todayISO();
-    if (!("demo" in l)) l.demo = false;
-  }
-
-  ensureUIPreferences(st);
-
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(st));
-
-  return st;
-}
-
-function saveState(nextState = state){ localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState)); }
-
 const DEMO = {
   firstNames: ["Jan", "Els", "Koen", "Sofie", "Lotte", "Tom", "An", "Pieter", "Nina", "Wim", "Bram", "Fien", "Arne", "Joke", "Raf", "Mira", "Tine", "Milan"],
   lastNames: ["Peeters", "Janssens", "Van den Broeck", "Wouters", "Claes", "Lambrechts", "Maes", "Vermeulen", "Hermans", "Goossens", "De Smet", "Schreurs"],
@@ -422,7 +221,7 @@ function seedDemoMonths(st, { months = 3, force = false } = {}){
   const hasDemo = (st.customers||[]).some(c => c.demo) || (st.logs||[]).some(l => l.demo) || (st.settlements||[]).some(s => s.demo);
   if (!force && hasDemo) return false;
 
-  ensureCoreProducts(st);
+  stateModule.ensureCoreProducts(st);
 
   const workProduct = st.products.find(p => (p.name||"").trim().toLowerCase() === "werk");
   const greenProduct = st.products.find(p => (p.name||"").trim().toLowerCase() === "groen");
@@ -599,17 +398,10 @@ function clearDemoData(st){
 }
 
 let state = stateModule.loadState();
+const appStore = createStore({ reducer: rootReducer, preloadedState: initAppState(state), effects: createEffects() });
+const { sumWorkMs, lineAmount, lineVat, bucketTotals, getSettlementTotals, isSettlementCalculated, getSettlementIconPresentation } = compute;
 
 // ---------- Computations ----------
-function sumWorkMs(log){
-  let t=0;
-  for (const s of (log.segments||[])){
-    if (s.type !== "work") continue;
-    const end = s.end ?? now();
-    t += Math.max(0, end - s.start);
-  }
-  return t;
-}
 function sumBreakMs(log){
   let t=0;
   for (const s of (log.segments||[])){
@@ -679,26 +471,6 @@ function getLogVisualState(log){
   if (state === "linked") return { state: "linked", color: "#ffcc00" };
   return { state: "free", color: "#93a0b5" };
 }
-function getSettlementTotals(settlement){
-  const invoiceTotals = bucketTotals(settlement.lines, "invoice");
-  const cashTotals = bucketTotals(settlement.lines, "cash");
-  return {
-    invoiceSubtotal: invoiceTotals.subtotal,
-    invoiceVat: invoiceTotals.vat,
-    invoiceTotal: invoiceTotals.total,
-    cashSubtotal: cashTotals.subtotal,
-    cashTotal: cashTotals.subtotal
-  };
-}
-function isSettlementCalculated(settlement){
-  return Boolean(
-    settlement?.isCalculated ||
-    settlement?.markedCalculated ||
-    settlement?.status === "calculated" ||
-    settlement?.status === "paid" ||
-    settlement?.calculatedAt
-  );
-}
 function getSettlementAmounts(settlement){
   const totals = getSettlementTotals(settlement || {});
   return {
@@ -711,33 +483,6 @@ function getSettlementPaymentFlags(settlement){
     invoicePaid: Boolean(settlement?.invoicePaid),
     cashPaid: Boolean(settlement?.cashPaid)
   };
-}
-function getSettlementIconPresentation(settlement){
-  const calculated = isSettlementCalculated(settlement);
-  const amounts = getSettlementAmounts(settlement);
-  const flags = getSettlementPaymentFlags(settlement);
-
-  const icons = [
-    {
-      type: "invoice",
-      show: calculated && amounts.invoice > 0,
-      color: flags.invoicePaid ? "green" : "orange"
-    },
-    {
-      type: "cash",
-      show: calculated && amounts.cash > 0,
-      color: flags.cashPaid ? "green" : "orange"
-    }
-  ];
-
-  /*
-    Sanity examples:
-    - not calculated -> [] (no icons shown because both show=false)
-    - calculated + invoice>0 + cash=0 -> [invoice icon]
-    - calculated + invoice>0 + cash>0 -> [invoice + cash]
-    - paid=true -> green, paid=false -> orange
-  */
-  return icons;
 }
 function getLogPresentation(log, sourceState){
   const settlement = (sourceState?.settlements || []).find(s => (s.logIds || []).includes(log?.id));
@@ -822,20 +567,6 @@ function statusLabelNL(s){
 }
 
 // ---------- Lines & totals ----------
-function lineAmount(line){ return round2((Number(line.qty)||0) * (Number(line.unitPrice)||0)); }
-function lineVat(line){
-  const r = Number(line.vatRate ?? state.settings.vatRate ?? 0.21);
-  const bucket = line.bucket || "invoice";
-  if (bucket === "cash") return 0;
-  return round2(lineAmount(line) * r);
-}
-function bucketTotals(lines, bucket){
-  const arr = (lines||[]).filter(l => (l.bucket||"invoice") === bucket);
-  const subtotal = round2(arr.reduce((a,l)=> a + lineAmount(l), 0));
-  const vat = round2(arr.reduce((a,l)=> a + lineVat(l), 0));
-  const total = round2(subtotal + vat);
-  return { subtotal, vat, total };
-}
 
 function settlementPaymentState(settlement){
   const invoiceTotals = bucketTotals(settlement.lines, "invoice");
@@ -857,7 +588,7 @@ function syncSettlementStatus(settlement){
   } else {
     settlement.status = settlement.isCalculated ? "calculated" : "draft";
   }
-  syncSettlementAmounts(settlement);
+  stateModule.syncSettlementAmounts(settlement);
 }
 
 function computeSettlementFromLogsInState(sourceState, customerId, logIds){
@@ -918,7 +649,7 @@ function computeSettlementFromLogs(customerId, logIds){
 
 // ---------- UI state ----------
 const ui = {
-  navStack: [{ view: "logs" }],
+  navStack: [],
   transition: null,
   logDetailSegmentEditId: null,
   activeLogQuickAdd: {
@@ -928,10 +659,13 @@ const ui = {
   }
 };
 
+let nav = null;
+
 // Guardrail: keep state mutations inside actions + commit.
 function commit(){
-  state = validateAndRepairState(state);
-  saveState(state);
+  state = stateModule.validateAndRepairState(state);
+  stateModule.saveState(state);
+  appStore.dispatch(engineActions.replaceData(state));
   render();
 }
 
@@ -1116,7 +850,7 @@ function addProductToLog(logId, productId, qty, unitPrice){
 }
 
 function currentView(){
-  return ui.navStack[ui.navStack.length - 1] || { view: "logs" };
+  return nav?.currentView() || { view: "logs" };
 }
 
 function updateTabs(){
@@ -1234,28 +968,32 @@ function renderTopbar(){
 }
 
 function setTab(key){
-  ui.navStack = [{ view: key }];
+  ui.navStack.splice(0, ui.navStack.length, { view: key });
+  appStore.dispatch(engineActions.setActiveTab(key));
   ui.transition = null;
   render();
 }
 
 function pushView(viewState){
   ui.transition = "push";
-  ui.navStack.push(viewState);
+  nav.pushView(viewState);
+  appStore.dispatch(engineActions.navigatePush(viewState));
   render();
 }
 
 function popView(){
   if (ui.navStack.length <= 1) return;
   ui.transition = "pop";
-  ui.navStack.pop();
+  nav.popView();
+  appStore.dispatch(engineActions.navigateBack());
   render();
 }
 
 function popViewInstant(){
   if (ui.navStack.length <= 1) return;
   ui.transition = null;
-  ui.navStack.pop();
+  nav.popView();
+  appStore.dispatch(engineActions.navigateBack());
   render();
 }
 
@@ -1659,7 +1397,7 @@ function _attachSettingsHandlers(){
 
   const validateBackupPayload = (payload)=>{
     if (!payload || typeof payload !== "object") return "Ongeldige backup: JSON-object ontbreekt.";
-    if (payload.version !== STORAGE_KEY) return "Ongeldige backup-versie. Alleen backups van TuinLog MVP v1 zijn toegestaan.";
+    if (payload.version !== stateModule.STORAGE_KEY) return "Ongeldige backup-versie. Alleen backups van TuinLog MVP v1 zijn toegestaan.";
     if (!payload.data || typeof payload.data !== "object") return "Ongeldige backup: data-object ontbreekt.";
     const required = ["customers", "logs", "settlements", "settings"];
     const missing = required.filter((key)=> !(key in payload.data));
@@ -1701,13 +1439,13 @@ function _attachSettingsHandlers(){
 
   $("#resetAllBtn").onclick = ()=>{
     if (!confirmAction("Reset alles? Dit wist alle lokale data.")) return;
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(stateModule.STORAGE_KEY);
     location.reload();
   };
 
   $("#backupExportBtn").onclick = ()=>{
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(stateModule.STORAGE_KEY);
       if (!raw){
         setBackupFeedback("error", "Er is geen lokale data gevonden om te exporteren.");
         return;
@@ -1715,7 +1453,7 @@ function _attachSettingsHandlers(){
       const parsed = JSON.parse(raw);
       const payload = {
         exportedAt: new Date().toISOString(),
-        version: STORAGE_KEY,
+        version: stateModule.STORAGE_KEY,
         data: parsed,
       };
       const today = new Date().toISOString().slice(0,10);
@@ -1774,7 +1512,7 @@ function _attachSettingsHandlers(){
         return;
       }
 
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload.data));
+      localStorage.setItem(stateModule.STORAGE_KEY, JSON.stringify(payload.data));
       location.reload();
     } catch {
       setBackupFeedback("error", "Import mislukt: kon het backup-bestand niet verwerken.");
@@ -1808,7 +1546,7 @@ function _attachSettingsHandlers(){
       return;
     }
 
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(stateModule.STORAGE_KEY);
     location.reload();
   };
 }
@@ -2591,13 +2329,6 @@ function settlementLogbookSummary(s){
   return { linkedCount: linkedLogs.length, totalWorkMs, totalProductCosts, totalLogPrice };
 }
 
-function syncSettlementAmounts(settlement){
-  if (!settlement) return;
-  const totals = getSettlementTotals(settlement);
-  settlement.invoiceAmount = totals.invoiceTotal;
-  settlement.cashAmount = totals.cashTotal;
-}
-
 function renderSettlementStatusIcons(settlement){
   const isCalculated = isSettlementCalculated(settlement);
   if (!isCalculated){
@@ -2639,7 +2370,7 @@ function calculateSettlement(settlement){
   settlement.isCalculated = true;
   settlement.calculatedAt = now();
   syncSettlementStatus(settlement);
-  syncSettlementAmounts(settlement);
+  stateModule.syncSettlementAmounts(settlement);
 }
 
 function renderSettlementLogOverviewSheet(settlementId){
@@ -3029,7 +2760,8 @@ if ("serviceWorker" in navigator){
 }
 
 // init
-const nav = createNav();
+nav = createNav();
+ui.navStack = nav.navStack;
 const modularActions = createActions({ getState: () => state, setState: (next) => { state = next; }, commit });
 const renderer = createRenderer({ getState: () => state, actions: modularActions, nav, renderImpl: render });
 
@@ -3041,6 +2773,13 @@ const renderer = createRenderer({ getState: () => state, actions: modularActions
 installIOSNoZoomGuards();
 setTab("logs");
 renderer.render();
+
+window.__TL__ = {
+  getState: appStore.getState,
+  dispatch: appStore.dispatch,
+  actions: engineActions,
+  selectors
+};
 
 // Timer tick: update active timer display every 15 seconds
 setInterval(()=>{
