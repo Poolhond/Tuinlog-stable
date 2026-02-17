@@ -314,6 +314,9 @@ label{ display:block; font-size:12px; color:var(--muted); margin: 0 0 6px 0; }
   border-color: var(--border);
 }
 .tab span{ font-size:11px; }
+.tab.tab-back{
+  gap: 4px;
+}
 
 .list{ display:flex; flex-direction:column; }
 .item{

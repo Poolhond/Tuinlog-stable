@@ -1121,6 +1121,9 @@ function currentView(){
 
 function updateTabs(){
   const key = ui.navStack[0]?.view || "logs";
+  const showDetailBack = ui.navStack.length > 1;
+  const navMeer = $("#nav-meer");
+
   $("#tab-logs").classList.toggle("hidden", key !== "logs");
   $("#tab-settlements").classList.toggle("hidden", key !== "settlements");
   $("#tab-meer").classList.toggle("hidden", key !== "meer");
@@ -1131,7 +1134,13 @@ function updateTabs(){
 
   $("#nav-logs").setAttribute("aria-selected", String(key === "logs"));
   $("#nav-settlements").setAttribute("aria-selected", String(key === "settlements"));
-  $("#nav-meer").setAttribute("aria-selected", String(key === "meer"));
+  navMeer.setAttribute("aria-selected", String(!showDetailBack && key === "meer"));
+  navMeer.setAttribute("aria-label", showDetailBack ? "Terug" : "Meer");
+  navMeer.setAttribute("title", showDetailBack ? "Terug" : "Meer");
+  navMeer.classList.toggle("tab-back", showDetailBack);
+  navMeer.innerHTML = showDetailBack
+    ? `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Terug</span>`
+    : `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg><span>Meer</span>`;
 }
 
 function viewTitle(viewState){
@@ -1253,7 +1262,13 @@ function popViewInstant(){
 
 $("#nav-logs").addEventListener("click", ()=>setTab("logs"));
 $("#nav-settlements").addEventListener("click", ()=>setTab("settlements"));
-$("#nav-meer").addEventListener("click", ()=>setTab("meer"));
+$("#nav-meer").addEventListener("click", ()=>{
+  if (ui.navStack.length > 1){
+    popView();
+    return;
+  }
+  setTab("meer");
+});
 
 $("#btnBack").addEventListener("click", popView);
 $("#btnNewLog").onclick = ()=>{
