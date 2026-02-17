@@ -1250,229 +1250,117 @@ function popViewInstant(){
   render();
 }
 
-function setupEdgeSwipeBackGesture(){
-  const rootPage = $("#rootPage");
-  const detailPage = $("#detailPage");
-  if (!rootPage || !detailPage) return;
+function setupBarSwipeBack(topbarEl, bottombarEl, canGoBackFn, goBackFn){
+  if (!topbarEl || !bottombarEl) return ()=>{};
 
-  // iOS swipe-back
-  // Make swipe-back feel natural on large iPhone screens:
-  // - wider edge grab area
-  // - allow a bit more diagonal movement before cancelling
-  // - only decide intent after a tiny movement threshold
-  const EDGE_ZONE_PX = 28;
-  const DIRECTION_LOCK_PX = 12;
-  const INTENT_PX = 6;
-  // Swipe release tuning (px/ms):
-  // - fast flick should succeed even with short distance
-  // - slow drag succeeds at ~22% width
-  const FAST_FLICK_VELOCITY = 0.55;   // ~550px/s
-  const SUPER_FLICK_VELOCITY = 0.9;   // very fast, allow tiny distance
-  const COMPLETE_PROGRESS = 0.22;
-  const CANCEL_PROGRESS = 0.08;
-  const SWIPE_DURATION_MS = 220;
-  const SWIPE_EASING = "cubic-bezier(0.2, 0.8, 0.2, 1)";
-
-  const dimOverlay = document.createElement("div");
-  dimOverlay.setAttribute("aria-hidden", "true");
-  Object.assign(dimOverlay.style, {
-    position: "absolute",
-    inset: "0",
-    background: "rgba(0,0,0,0.08)",
-    opacity: "0",
-    pointerEvents: "none",
-    transition: "none",
-    willChange: "opacity"
-  });
-  if (getComputedStyle(rootPage).position === "static") rootPage.style.position = "relative";
-  rootPage.appendChild(dimOverlay);
+  const INTENT_PX = 10;
+  const TRIGGER_DX = 70;
+  const TRIGGER_VELOCITY = 0.7;
+  const INTERACTIVE_SELECTOR = [
+    "button",
+    "a",
+    "input",
+    "select",
+    "textarea",
+    "label",
+    "summary",
+    "[role='button']",
+    "[role='link']",
+    "[contenteditable='true']",
+    "[data-no-swipe]"
+  ].join(",");
 
   const gesture = {
     active: false,
     confirmed: false,
-    cancelled: false,
-    touchId: null,
     pointerId: null,
+    touchId: null,
+    source: null,
     startX: 0,
     startY: 0,
-    currentX: 0,
+    startTime: 0,
     lastX: 0,
     lastTime: 0,
-    velocityX: 0,
-    velocityXSmooth: 0,
-    width: 1,
-    frame: null,
-    usedInput: null
+    ownerEl: null,
+    pointerCaptured: false
   };
 
-  // NOTE: We intentionally do NOT cancel swipe-back because of vertical movement.
-  // If the user starts from the left edge, we treat it as "grab back gesture".
-
-  const clampDx = ()=> Math.max(0, Math.min(gesture.currentX - gesture.startX, gesture.width));
-
-  const applyDragTransforms = ()=>{
-    const dx = clampDx();
-    const progress = dx / Math.max(1, gesture.width);
-    // translate3d keeps it on the GPU and reduces stutter on iOS
-    detailPage.style.transform = `translate3d(${dx}px, 0, 0)`;
-    rootPage.style.transform = `translate3d(${(-0.2 * gesture.width) + (dx * 0.12)}px, 0, 0)`;
-    dimOverlay.style.opacity = `${Math.max(0, 1 - progress)}`;
-  };
-
-  const queueFrame = ()=>{
-    if (gesture.frame) return;
-    gesture.frame = requestAnimationFrame(()=>{
-      gesture.frame = null;
-      if (!gesture.confirmed) return;
-      applyDragTransforms();
-    });
-  };
-
-  const clearFrame = ()=>{
-    if (!gesture.frame) return;
-    cancelAnimationFrame(gesture.frame);
-    gesture.frame = null;
-  };
-
-  const cleanupStyles = ()=>{
-    detailPage.style.transition = "";
-    rootPage.style.transition = "";
-    dimOverlay.style.transition = "";
-    detailPage.style.transform = "";
-    rootPage.style.transform = "";
-    dimOverlay.style.opacity = "0";
-    detailPage.style.willChange = "";
-    rootPage.style.willChange = "";
-    rootPage.style.overflowX = "";
-    detailPage.style.overflowX = "";
-    detailPage.style.touchAction = "";
-  };
-
-  const resetGestureState = ()=>{
-    clearFrame();
+  const resetGesture = ()=>{
+    if (gesture.pointerCaptured && gesture.ownerEl?.releasePointerCapture && gesture.pointerId != null){
+      try { gesture.ownerEl.releasePointerCapture(gesture.pointerId); } catch {}
+    }
     gesture.active = false;
     gesture.confirmed = false;
-    gesture.cancelled = false;
-    gesture.touchId = null;
     gesture.pointerId = null;
-    gesture.usedInput = null;
+    gesture.touchId = null;
+    gesture.source = null;
+    gesture.ownerEl = null;
+    gesture.pointerCaptured = false;
   };
 
-  const beginConfirmedSwipe = ()=>{
-    gesture.confirmed = true;
-    detailPage.style.transition = "none";
-    rootPage.style.transition = "none";
-    dimOverlay.style.transition = "none";
-    detailPage.style.willChange = "transform";
-    rootPage.style.willChange = "transform";
-    // Hint to the browser how this element will be panned.
-    // We still preventDefault once confirmed.
-    detailPage.style.touchAction = "pan-y";
-    rootPage.style.overflowX = "hidden";
-    detailPage.style.overflowX = "hidden";
-    rootPage.style.transform = `translate3d(${-0.2 * gesture.width}px, 0, 0)`;
-    detailPage.style.transform = "translate3d(0px, 0, 0)";
-    dimOverlay.style.opacity = "1";
+  const isInteractiveTarget = (target, container)=>{
+    if (!(target instanceof Element)) return false;
+    const interactive = target.closest(INTERACTIVE_SELECTOR);
+    return !!(interactive && container.contains(interactive));
   };
 
-  const animateTo = (targetX, done)=>{
-    detailPage.style.transition = `transform ${SWIPE_DURATION_MS}ms ${SWIPE_EASING}`;
-    rootPage.style.transition = `transform ${SWIPE_DURATION_MS}ms ${SWIPE_EASING}`;
-    dimOverlay.style.transition = `opacity ${SWIPE_DURATION_MS}ms ${SWIPE_EASING}`;
-    detailPage.style.transform = `translate3d(${targetX}px, 0, 0)`;
-    rootPage.style.transform = `translate3d(${(-0.2 * gesture.width) + (targetX * 0.12)}px, 0, 0)`;
-    dimOverlay.style.opacity = `${Math.max(0, 1 - (targetX / Math.max(1, gesture.width)))}`;
-    setTimeout(()=>{
-      cleanupStyles();
-      resetGestureState();
-      done?.();
-    }, SWIPE_DURATION_MS);
-  };
-
-  const cancelSwipe = ()=>{
-    if (!gesture.confirmed) return resetGestureState();
-    animateTo(0);
-  };
-
-  const finishSwipe = ()=>{
-    if (!gesture.confirmed) return resetGestureState();
-    animateTo(gesture.width, ()=>popViewInstant());
-  };
-
-  const onStart = (x, y, target, inputType)=>{
-    if (gesture.active || ui.navStack.length <= 1) return false;
-    if (!detailPage.classList.contains("active")) return false;
-    if (x > EDGE_ZONE_PX) return false;
+  const onStart = (eventLike, source, ownerEl)=>{
+    if (gesture.active) return false;
+    if (!canGoBackFn?.()) return false;
+    if (isInteractiveTarget(eventLike.target, ownerEl)) return false;
 
     gesture.active = true;
     gesture.confirmed = false;
-    gesture.cancelled = false;
-    gesture.startX = x;
-    gesture.startY = y;
-    gesture.currentX = x;
-    gesture.lastX = x;
-    gesture.lastTime = performance.now();
-    gesture.velocityX = 0;
-    gesture.velocityXSmooth = 0;
-    gesture.width = window.innerWidth || detailPage.clientWidth || 1;
-    gesture.usedInput = inputType;
+    gesture.source = source;
+    gesture.ownerEl = ownerEl;
+    gesture.startX = eventLike.clientX;
+    gesture.startY = eventLike.clientY;
+    gesture.startTime = performance.now();
+    gesture.lastX = eventLike.clientX;
+    gesture.lastTime = gesture.startTime;
     return true;
   };
 
-  const onMove = (x, y, rawEvent)=>{
-    if (!gesture.active || gesture.cancelled) return;
+  const onMove = (eventLike, rawEvent)=>{
+    if (!gesture.active) return;
 
-    const dx = x - gesture.startX;
-    const dy = y - gesture.startY;
+    const dx = eventLike.clientX - gesture.startX;
     const absDx = Math.abs(dx);
-    const absDy = Math.abs(dy);
+    const absDy = Math.abs(eventLike.clientY - gesture.startY);
 
-    // Don’t decide anything until the user actually moved a little.
-    if (!gesture.confirmed && (absDx + absDy) < INTENT_PX) return;
-
-    // EDGE GRAB RULE:
-    // If the gesture started inside the left edge zone, we never cancel because of vertical movement.
-    // We confirm as soon as the user moves right a bit.
     if (!gesture.confirmed){
-      if (dx > 0 && absDx > DIRECTION_LOCK_PX) beginConfirmedSwipe();
-      else return;
+      if ((absDx + absDy) < INTENT_PX) return;
+      if (dx <= INTENT_PX) return;
+      gesture.confirmed = true;
+
+      if (gesture.source === "pointer" && gesture.ownerEl?.setPointerCapture && gesture.pointerId != null){
+        try {
+          gesture.ownerEl.setPointerCapture(gesture.pointerId);
+          gesture.pointerCaptured = true;
+        } catch {}
+      }
     }
 
     if (rawEvent?.cancelable) rawEvent.preventDefault();
-    const now = performance.now();
-    const dt = Math.max(1, now - gesture.lastTime);
-    const vInst = (x - gesture.lastX) / dt;
-    // Smooth velocity so “flick” detection feels consistent and less jittery.
-    gesture.velocityXSmooth = (gesture.velocityXSmooth * 0.8) + (vInst * 0.2);
-    gesture.velocityX = gesture.velocityXSmooth;
-    gesture.lastX = x;
-    gesture.lastTime = now;
-    gesture.currentX = x;
-    queueFrame();
+    gesture.lastX = eventLike.clientX;
+    gesture.lastTime = performance.now();
   };
 
   const onEnd = ()=>{
     if (!gesture.active) return;
-    if (!gesture.confirmed) return resetGestureState();
+    if (!gesture.confirmed) return resetGesture();
 
-    const dx = clampDx();
-    const progress = dx / Math.max(1, gesture.width);
-    const velocityX = gesture.velocityX;
+    const dt = Math.max(1, performance.now() - gesture.startTime);
+    const dx = gesture.lastX - gesture.startX;
+    const velocityX = dx / dt;
+    const shouldGoBack = dx > TRIGGER_DX || velocityX > TRIGGER_VELOCITY;
 
-    if (dx <= 0) return cancelSwipe();
-    if (progress < CANCEL_PROGRESS && velocityX < FAST_FLICK_VELOCITY) return cancelSwipe();
-
-    // Very fast, short flick: succeed immediately (even small dx).
-    if (velocityX >= SUPER_FLICK_VELOCITY && dx >= 8) return finishSwipe();
-    // Fast flick: succeed with a small-but-visible movement.
-    if (velocityX >= FAST_FLICK_VELOCITY && dx >= 20) return finishSwipe();
-    if (progress >= COMPLETE_PROGRESS) return finishSwipe();
-
-    return cancelSwipe();
+    resetGesture();
+    if (shouldGoBack) goBackFn?.();
   };
 
   const getTouchById = (touchList, id)=>{
-    if (id == null) return null;
+    if (id == null || !touchList) return null;
     for (let i = 0; i < touchList.length; i += 1){
       const t = touchList[i];
       if (t.identifier === id) return t;
@@ -1480,52 +1368,75 @@ function setupEdgeSwipeBackGesture(){
     return null;
   };
 
-  detailPage.addEventListener("touchstart", (e)=>{
-    const touch = e.changedTouches?.[0];
-    if (!touch) return;
-    const started = onStart(touch.clientX, touch.clientY, e.target, "touch");
-    if (started) gesture.touchId = touch.identifier;
-  }, { passive: false });
+  const bars = [topbarEl, bottombarEl];
+  const removeFns = [];
 
-  detailPage.addEventListener("touchmove", (e)=>{
-    const touch = getTouchById(e.changedTouches, gesture.touchId) || getTouchById(e.touches, gesture.touchId);
-    if (!touch) return;
-    onMove(touch.clientX, touch.clientY, e);
-  }, { passive: false });
+  const addEvt = (el, name, fn, opts)=>{
+    el.addEventListener(name, fn, opts);
+    removeFns.push(()=>el.removeEventListener(name, fn, opts));
+  };
 
-  detailPage.addEventListener("touchend", (e)=>{
-    if (!getTouchById(e.changedTouches, gesture.touchId)) return;
-    onEnd();
-  }, { passive: false });
+  for (const barEl of bars){
+    if (window.PointerEvent){
+      addEvt(barEl, "pointerdown", (e)=>{
+        if (e.pointerType === "mouse") return;
+        if (!onStart(e, "pointer", barEl)) return;
+        gesture.pointerId = e.pointerId;
+      }, { passive: true });
 
-  detailPage.addEventListener("touchcancel", (e)=>{
-    if (!getTouchById(e.changedTouches, gesture.touchId)) return;
-    cancelSwipe();
-  }, { passive: false });
+      addEvt(barEl, "pointermove", (e)=>{
+        if (!gesture.active || gesture.source !== "pointer") return;
+        if (gesture.pointerId !== e.pointerId) return;
+        onMove(e, e);
+      }, { passive: false });
 
-  if (window.PointerEvent){
-    detailPage.addEventListener("pointerdown", (e)=>{
-      if (e.pointerType === "mouse") return;
-      const started = onStart(e.clientX, e.clientY, e.target, "pointer");
-      if (started) gesture.pointerId = e.pointerId;
+      addEvt(barEl, "pointerup", (e)=>{
+        if (!gesture.active || gesture.source !== "pointer") return;
+        if (gesture.pointerId !== e.pointerId) return;
+        onEnd();
+      }, { passive: true });
+
+      addEvt(barEl, "pointercancel", (e)=>{
+        if (!gesture.active || gesture.source !== "pointer") return;
+        if (gesture.pointerId !== e.pointerId) return;
+        resetGesture();
+      }, { passive: true });
+    }
+
+    addEvt(barEl, "touchstart", (e)=>{
+      if (window.PointerEvent) return;
+      const touch = e.changedTouches?.[0];
+      if (!touch) return;
+      if (!onStart(touch, "touch", barEl)) return;
+      gesture.touchId = touch.identifier;
+    }, { passive: true });
+
+    addEvt(barEl, "touchmove", (e)=>{
+      if (window.PointerEvent || !gesture.active || gesture.source !== "touch") return;
+      const touch = getTouchById(e.changedTouches, gesture.touchId) || getTouchById(e.touches, gesture.touchId);
+      if (!touch) return;
+      onMove(touch, e);
     }, { passive: false });
 
-    detailPage.addEventListener("pointermove", (e)=>{
-      if (gesture.pointerId !== e.pointerId || gesture.usedInput === "touch") return;
-      onMove(e.clientX, e.clientY, e);
-    }, { passive: false });
-
-    detailPage.addEventListener("pointerup", (e)=>{
-      if (gesture.pointerId !== e.pointerId || gesture.usedInput === "touch") return;
+    addEvt(barEl, "touchend", (e)=>{
+      if (window.PointerEvent || !gesture.active || gesture.source !== "touch") return;
+      if (!getTouchById(e.changedTouches, gesture.touchId)) return;
       onEnd();
-    }, { passive: false });
+    }, { passive: true });
 
-    detailPage.addEventListener("pointercancel", (e)=>{
-      if (gesture.pointerId !== e.pointerId || gesture.usedInput === "touch") return;
-      cancelSwipe();
-    }, { passive: false });
+    addEvt(barEl, "touchcancel", (e)=>{
+      if (window.PointerEvent || !gesture.active || gesture.source !== "touch") return;
+      if (!getTouchById(e.changedTouches, gesture.touchId)) return;
+      resetGesture();
+    }, { passive: true });
   }
+
+  return ()=>{
+    removeFns.forEach(fn => fn());
+    resetGesture();
+  };
 }
+
 
 
 $("#nav-logs").addEventListener("click", ()=>setTab("logs"));
@@ -1622,7 +1533,12 @@ function render(){
   ui.transition = null;
 }
 
-setupEdgeSwipeBackGesture();
+setupBarSwipeBack(
+  $(".topbar"),
+  $(".tabs"),
+  ()=>ui.navStack.length > 1 && !$("#btnBack")?.classList.contains("hidden"),
+  ()=>popView()
+);
 
 function getLogbookPeriodStart(period){
   const current = new Date();
