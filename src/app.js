@@ -1258,12 +1258,13 @@ function setupEdgeSwipeBackGesture(){
   // iOS swipe-back
   const EDGE_ZONE_PX = 12;
   const DIRECTION_LOCK_PX = 10;
+  // Swipe release tuning: fast >=0.28 @ >=6%, medium >=0.20 @ >=12%, slow >=22%; cancel <8% & <0.20.
+  const FAST_FLICK_VELOCITY = 0.28;
+  const MEDIUM_FLICK_VELOCITY = 0.20;
+  const FAST_FLICK_PROGRESS = 0.06;
+  const MEDIUM_FLICK_PROGRESS = 0.12;
   const COMPLETE_PROGRESS = 0.22;
-  const COMPLETE_VELOCITY = 0.35;
-  const FAST_FLICK_PROGRESS = 0.12;
-  const HYSTERESIS_PROGRESS_MIN = 0.18;
-  const HYSTERESIS_PROGRESS_MAX = 0.22;
-  const HYSTERESIS_VELOCITY = 0.05;
+  const CANCEL_PROGRESS = 0.08;
   const SWIPE_DURATION_MS = 220;
   const SWIPE_EASING = "cubic-bezier(0.2, 0.8, 0.2, 1)";
 
@@ -1454,13 +1455,15 @@ function setupEdgeSwipeBackGesture(){
 
     const dx = clampDx();
     const progress = dx / Math.max(1, gesture.width);
-    const isFastFlick = gesture.velocityX > COMPLETE_VELOCITY && progress > FAST_FLICK_PROGRESS;
-    const isNearCompletionBoundary = progress >= HYSTERESIS_PROGRESS_MIN && progress <= HYSTERESIS_PROGRESS_MAX;
-    const passesHysteresis = isNearCompletionBoundary && gesture.velocityX > HYSTERESIS_VELOCITY;
-    const shouldCancel = progress < FAST_FLICK_PROGRESS && gesture.velocityX < COMPLETE_VELOCITY;
+    const velocityX = gesture.velocityX;
 
-    if (progress > COMPLETE_PROGRESS || isFastFlick || passesHysteresis) return finishSwipe();
-    if (shouldCancel) return cancelSwipe();
+    if (dx <= 0) return cancelSwipe();
+    if (progress < CANCEL_PROGRESS && velocityX < MEDIUM_FLICK_VELOCITY) return cancelSwipe();
+
+    if (velocityX >= FAST_FLICK_VELOCITY && progress >= FAST_FLICK_PROGRESS) return finishSwipe();
+    if (velocityX >= MEDIUM_FLICK_VELOCITY && progress >= MEDIUM_FLICK_PROGRESS) return finishSwipe();
+    if (progress >= COMPLETE_PROGRESS) return finishSwipe();
+
     return cancelSwipe();
   };
 
