@@ -13,6 +13,8 @@ import { createRenderer } from './render.js';
 
 const STORAGE_KEY = "tuinlog_mvp_v1";
 const $ = (s) => document.querySelector(s);
+const NAV_TRANSITION_MS = 240;
+const NAV_TRANSITION_EASING = "cubic-bezier(0.22, 0.61, 0.36, 1)";
 
 const uid = () => Math.random().toString(16).slice(2) + "-" + Math.random().toString(16).slice(2);
 const now = () => Date.now();
@@ -1241,6 +1243,183 @@ function popView(){
   render();
 }
 
+function popViewInstant(){
+  if (ui.navStack.length <= 1) return;
+  ui.transition = null;
+  ui.navStack.pop();
+  render();
+}
+
+function setupEdgeSwipeBackGesture(){
+  const rootPage = $("#rootPage");
+  const detailPage = $("#detailPage");
+  if (!rootPage || !detailPage) return;
+
+  const gesture = {
+    active: false,
+    dragging: false,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    currentX: 0,
+    lastX: 0,
+    lastTime: 0,
+    velocityX: 0,
+    frame: null,
+    width: 0,
+    usingTouchFallback: false
+  };
+
+  const queueFrame = ()=>{
+    if (gesture.frame) return;
+    gesture.frame = requestAnimationFrame(()=>{
+      gesture.frame = null;
+      if (!gesture.dragging) return;
+      const dx = Math.max(0, Math.min(gesture.currentX - gesture.startX, gesture.width));
+      rootPage.style.transform = `translateX(${(-0.2 * gesture.width) + (dx * 0.12)}px)`;
+      detailPage.style.transform = `translateX(${dx}px)`;
+    });
+  };
+
+  const resetGestureStyles = ()=>{
+    detailPage.style.transition = "";
+    rootPage.style.transition = "";
+    detailPage.style.transform = "";
+    rootPage.style.transform = "";
+  };
+
+  const resetGestureState = ()=>{
+    gesture.active = false;
+    gesture.dragging = false;
+    gesture.pointerId = null;
+    if (gesture.frame){
+      cancelAnimationFrame(gesture.frame);
+      gesture.frame = null;
+    }
+  };
+
+  const cancelSwipe = ()=>{
+    if (!gesture.dragging) return resetGestureState();
+    detailPage.style.transition = `transform ${NAV_TRANSITION_MS}ms ${NAV_TRANSITION_EASING}`;
+    rootPage.style.transition = `transform ${NAV_TRANSITION_MS}ms ${NAV_TRANSITION_EASING}`;
+    detailPage.style.transform = "translateX(0px)";
+    rootPage.style.transform = `translateX(${-0.2 * gesture.width}px)`;
+    setTimeout(()=>{
+      resetGestureStyles();
+      resetGestureState();
+    }, NAV_TRANSITION_MS);
+  };
+
+  const finishSwipe = ()=>{
+    if (!gesture.dragging) return resetGestureState();
+    detailPage.style.transition = `transform ${NAV_TRANSITION_MS}ms ${NAV_TRANSITION_EASING}`;
+    rootPage.style.transition = `transform ${NAV_TRANSITION_MS}ms ${NAV_TRANSITION_EASING}`;
+    detailPage.style.transform = `translateX(${gesture.width}px)`;
+    rootPage.style.transform = "translateX(0px)";
+    setTimeout(()=>{
+      resetGestureStyles();
+      resetGestureState();
+      popViewInstant();
+    }, NAV_TRANSITION_MS);
+  };
+
+  const beginDrag = ()=>{
+    gesture.dragging = true;
+    gesture.width = window.innerWidth || detailPage.clientWidth || 1;
+    detailPage.style.transition = "none";
+    rootPage.style.transition = "none";
+    rootPage.style.transform = `translateX(${-0.2 * gesture.width}px)`;
+    detailPage.style.transform = "translateX(0px)";
+  };
+
+  const onStart = (x, y)=>{
+    if (ui.navStack.length <= 1) return;
+    if (!detailPage.classList.contains("active")) return;
+    if (x > 20) return;
+    gesture.active = true;
+    gesture.dragging = false;
+    gesture.startX = x;
+    gesture.startY = y;
+    gesture.currentX = x;
+    gesture.lastX = x;
+    gesture.lastTime = performance.now();
+    gesture.velocityX = 0;
+    gesture.width = window.innerWidth || detailPage.clientWidth || 1;
+  };
+
+  const onMove = (x, y, rawEvent)=>{
+    if (!gesture.active) return;
+
+    const dx = x - gesture.startX;
+    const dy = y - gesture.startY;
+
+    if (!gesture.dragging){
+      if (Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)){
+        resetGestureState();
+        return;
+      }
+      if (dx > 6 && Math.abs(dx) > Math.abs(dy)) beginDrag();
+      else return;
+    }
+
+    if (rawEvent?.cancelable) rawEvent.preventDefault();
+
+    const nowTime = performance.now();
+    const dt = Math.max(1, nowTime - gesture.lastTime);
+    gesture.velocityX = (x - gesture.lastX) / dt;
+    gesture.lastX = x;
+    gesture.lastTime = nowTime;
+    gesture.currentX = x;
+    queueFrame();
+  };
+
+  const onEnd = ()=>{
+    if (!gesture.active) return;
+    if (!gesture.dragging) return resetGestureState();
+
+    const dragged = Math.max(0, gesture.currentX - gesture.startX);
+    const progress = dragged / Math.max(1, gesture.width);
+    const isFast = gesture.velocityX > 0.5;
+    if (progress > 0.3 || isFast) finishSwipe();
+    else cancelSwipe();
+  };
+
+  if (window.PointerEvent){
+    detailPage.addEventListener("pointerdown", (e)=>{
+      if (e.pointerType === "mouse") return;
+      onStart(e.clientX, e.clientY);
+      if (gesture.active) gesture.pointerId = e.pointerId;
+    });
+    detailPage.addEventListener("pointermove", (e)=>{
+      if (gesture.pointerId !== e.pointerId) return;
+      onMove(e.clientX, e.clientY, e);
+    });
+    detailPage.addEventListener("pointerup", (e)=>{
+      if (gesture.pointerId !== e.pointerId) return;
+      onEnd();
+    });
+    detailPage.addEventListener("pointercancel", (e)=>{
+      if (gesture.pointerId !== e.pointerId) return;
+      cancelSwipe();
+    });
+    return;
+  }
+
+  gesture.usingTouchFallback = true;
+  detailPage.addEventListener("touchstart", (e)=>{
+    const touch = e.changedTouches?.[0];
+    if (!touch) return;
+    onStart(touch.clientX, touch.clientY);
+  }, { passive: true });
+  detailPage.addEventListener("touchmove", (e)=>{
+    const touch = e.changedTouches?.[0];
+    if (!touch) return;
+    onMove(touch.clientX, touch.clientY, e);
+  }, { passive: false });
+  detailPage.addEventListener("touchend", onEnd, { passive: true });
+  detailPage.addEventListener("touchcancel", cancelSwipe, { passive: true });
+}
+
 $("#nav-logs").addEventListener("click", ()=>setTab("logs"));
 $("#nav-settlements").addEventListener("click", ()=>setTab("settlements"));
 $("#nav-meer").addEventListener("click", ()=>setTab("meer"));
@@ -1326,7 +1505,7 @@ function render(){
       setTimeout(()=>{
         detailPage.className = "page hidden";
         detailPage.innerHTML = '<div class="page-inner"><div class="detail-head"><div id="sheetTitle" class="hidden"></div><div class="sheet-actions" id="sheetActions"></div></div><div class="sheet-body" id="sheetBody"></div></div>';
-      }, 280);
+      }, NAV_TRANSITION_MS);
     } else {
       detailPage.className = "page hidden";
       rootPage.className = "page active";
@@ -1334,6 +1513,8 @@ function render(){
   }
   ui.transition = null;
 }
+
+setupEdgeSwipeBackGesture();
 
 function getLogbookPeriodStart(period){
   const current = new Date();
