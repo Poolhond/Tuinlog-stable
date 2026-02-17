@@ -2243,7 +2243,11 @@ function renderLogSheet(id){
   $("#logSettlement").onchange = ()=>{
     if (locked) return;
     const v = $("#logSettlement").value;
-    actions.linkLogToSettlement(log.id, v);
+    const linkedSettlement = actions.linkLogToSettlement(log.id, v);
+    if (v !== "none" && linkedSettlement?.id){
+      openSheet("settlement", linkedSettlement.id);
+      return;
+    }
     renderSheet();
   };
 
