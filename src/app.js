@@ -3,6 +3,11 @@ import { createNav } from './nav.js';
 import { createActions } from './actions.js';
 import { createRenderer } from './render.js';
 import * as compute from './compute.js';
+import { createStore } from './engine/store.js';
+import { rootReducer, createRootState } from './engine/reducer.js';
+import { createEffects } from './engine/effects.js';
+import * as engineActions from './engine/actions.js';
+import * as selectors from './engine/selectors.js';
 import { pad2, round2, fmtMoney, fmtClock, formatDurationCompact } from './utils/format.js';
 
 /* Tuinlog MVP — 5 boeken + detail sheets
@@ -2762,6 +2767,24 @@ const renderer = createRenderer({ getState: () => state, actions: modularActions
 installIOSNoZoomGuards();
 setTab("logs");
 renderer.render();
+
+const engineStore = createStore({
+  reducer: rootReducer,
+  preloadedState: createRootState(state),
+  effects: createEffects()
+});
+
+engineStore.subscribe(()=>{
+  const nextRoot = engineStore.getState();
+  state = nextRoot.data;
+});
+
+window.__TL__ = {
+  getState: () => engineStore.getState(),
+  dispatch: engineStore.dispatch,
+  actions: engineActions,
+  selectors
+};
 
 // Timer tick: update active timer display every 15 seconds
 setInterval(()=>{
