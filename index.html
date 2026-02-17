@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>Tuinlog</title>
+  <meta name="theme-color" content="#0b0f14" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="./icon-192.png" />
+  <link rel="stylesheet" href="./app.css" />
+</head>
+<body>
+  <div class="viewport">
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="iconbtn ghost" id="btnBack" aria-label="Terug" title="Terug">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="titlewrap">
+          <div class="apptitle" id="topbarTitle">Logboek</div>
+          <div class="topsubtitle hidden" id="topbarSubtitle"></div>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <button class="iconbtn ghost" id="btnNewLog" aria-label="Nieuwe werklog" title="Nieuwe werklog">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="main" id="mainPages">
+      <section class="page active" id="rootPage">
+        <div class="page-inner">
+          <section id="tab-logs"></section>
+          <section id="tab-settlements" class="hidden"></section>
+          <section id="tab-meer" class="hidden"></section>
+        </div>
+      </section>
+      <section class="page hidden" id="detailPage">
+        <div class="page-inner">
+          <div class="detail-head">
+            <div id="sheetTitle" class="hidden"></div>
+            <div class="sheet-actions" id="sheetActions"></div>
+          </div>
+          <div class="sheet-body" id="sheetBody"></div>
+        </div>
+      </section>
+    </main>
+
+    <nav class="tabs" role="tablist" aria-label="Hoofdmenu">
+      <button class="tab active" id="nav-logs" role="tab" aria-selected="true">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Werk</span>
+      </button>
+      <button class="tab" id="nav-settlements" role="tab" aria-selected="false">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Geld</span>
+      </button>
+      <button class="tab" id="nav-meer" role="tab" aria-selected="false">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+      <span>Meer</span>
+      </button>
+    </nav>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
