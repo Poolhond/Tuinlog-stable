@@ -1256,19 +1256,8 @@ function setupBarSwipeBack(topbarEl, bottombarEl, canGoBackFn, goBackFn){
   const INTENT_PX = 10;
   const TRIGGER_DX = 70;
   const TRIGGER_VELOCITY = 0.7;
-  const INTERACTIVE_SELECTOR = [
-    "button",
-    "a",
-    "input",
-    "select",
-    "textarea",
-    "label",
-    "summary",
-    "[role='button']",
-    "[role='link']",
-    "[contenteditable='true']",
-    "[data-no-swipe]"
-  ].join(",");
+  const INTERACTIVE_SELECTOR = "[data-no-swipe]";
+  let suppressClickOnce = false;
 
   const gesture = {
     active: false,
@@ -1281,6 +1270,7 @@ function setupBarSwipeBack(topbarEl, bottombarEl, canGoBackFn, goBackFn){
     startTime: 0,
     lastX: 0,
     lastTime: 0,
+    velocityX: 0,
     ownerEl: null,
     pointerCaptured: false
   };
@@ -1298,16 +1288,15 @@ function setupBarSwipeBack(topbarEl, bottombarEl, canGoBackFn, goBackFn){
     gesture.pointerCaptured = false;
   };
 
-  const isInteractiveTarget = (target, container)=>{
+  const isInteractiveTarget = (target)=>{
     if (!(target instanceof Element)) return false;
-    const interactive = target.closest(INTERACTIVE_SELECTOR);
-    return !!(interactive && container.contains(interactive));
+    return !!target.closest(INTERACTIVE_SELECTOR);
   };
 
   const onStart = (eventLike, source, ownerEl)=>{
     if (gesture.active) return false;
     if (!canGoBackFn?.()) return false;
-    if (isInteractiveTarget(eventLike.target, ownerEl)) return false;
+    if (isInteractiveTarget(eventLike.target)) return false;
 
     gesture.active = true;
     gesture.confirmed = false;
@@ -1318,6 +1307,7 @@ function setupBarSwipeBack(topbarEl, bottombarEl, canGoBackFn, goBackFn){
     gesture.startTime = performance.now();
     gesture.lastX = eventLike.clientX;
     gesture.lastTime = gesture.startTime;
+    gesture.velocityX = 0;
     return true;
   };
 
@@ -1326,12 +1316,13 @@ function setupBarSwipeBack(topbarEl, bottombarEl, canGoBackFn, goBackFn){
 
     const dx = eventLike.clientX - gesture.startX;
     const absDx = Math.abs(dx);
-    const absDy = Math.abs(eventLike.clientY - gesture.startY);
+    const nowTime = performance.now();
 
     if (!gesture.confirmed){
-      if ((absDx + absDy) < INTENT_PX) return;
+      if (absDx < INTENT_PX) return;
       if (dx <= INTENT_PX) return;
       gesture.confirmed = true;
+      suppressClickOnce = true;
 
       if (gesture.source === "pointer" && gesture.ownerEl?.setPointerCapture && gesture.pointerId != null){
         try {
@@ -1342,17 +1333,19 @@ function setupBarSwipeBack(topbarEl, bottombarEl, canGoBackFn, goBackFn){
     }
 
     if (rawEvent?.cancelable) rawEvent.preventDefault();
+    const dt = Math.max(1, nowTime - gesture.lastTime);
+    const vInst = (eventLike.clientX - gesture.lastX) / dt;
+    gesture.velocityX = (gesture.velocityX * 0.8) + (vInst * 0.2);
     gesture.lastX = eventLike.clientX;
-    gesture.lastTime = performance.now();
+    gesture.lastTime = nowTime;
   };
 
   const onEnd = ()=>{
     if (!gesture.active) return;
     if (!gesture.confirmed) return resetGesture();
 
-    const dt = Math.max(1, performance.now() - gesture.startTime);
     const dx = gesture.lastX - gesture.startX;
-    const velocityX = dx / dt;
+    const velocityX = gesture.velocityX;
     const shouldGoBack = dx > TRIGGER_DX || velocityX > TRIGGER_VELOCITY;
 
     resetGesture();
@@ -1375,6 +1368,14 @@ function setupBarSwipeBack(topbarEl, bottombarEl, canGoBackFn, goBackFn){
     el.addEventListener(name, fn, opts);
     removeFns.push(()=>el.removeEventListener(name, fn, opts));
   };
+
+  addEvt(document, "click", (e)=>{
+    if (!suppressClickOnce) return;
+    suppressClickOnce = false;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation?.();
+  }, { capture: true });
 
   for (const barEl of bars){
     if (window.PointerEvent){
