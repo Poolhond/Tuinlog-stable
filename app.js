@@ -189,6 +189,7 @@ function openTextConfirmModal({ title, message, expectedText, confirmText = "Def
 // ---------- State ----------
 function defaultState(){
   return {
+    schemaVersion: 1,
     settings: { hourlyRate: 38, vatRate: 0.21 },
     customers: [
       { id: uid(), nickname:"Van de Werf", name:"", address:"Heverlee, Leuven", createdAt: now() },
@@ -211,6 +212,49 @@ function defaultState(){
       sortDir: "desc"
     }
   };
+}
+
+function safeParseState(raw){
+  try {
+    return { ok: true, value: JSON.parse(raw) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function migrateState(st){
+  if (!st || typeof st !== "object" || Array.isArray(st)) return defaultState();
+
+  let version = Number.isInteger(st.schemaVersion) ? st.schemaVersion : 0;
+
+  while (version < 1){
+    switch (version){
+      case 0:
+        st.schemaVersion = 1;
+        version = 1;
+        break;
+      default:
+        st.schemaVersion = 1;
+        version = 1;
+        break;
+    }
+  }
+
+  if (!Number.isInteger(st.schemaVersion) || st.schemaVersion < 1) st.schemaVersion = 1;
+  return st;
+}
+
+function validateAndRepairState(st){
+  if (!st || typeof st !== "object" || Array.isArray(st)) return defaultState();
+
+  if (!Array.isArray(st.customers)) st.customers = [];
+  if (!Array.isArray(st.logs)) st.logs = [];
+  if (!Array.isArray(st.settlements)) st.settlements = [];
+  if (!Array.isArray(st.products)) st.products = [];
+  if (!st.settings || typeof st.settings !== "object" || Array.isArray(st.settings)) st.settings = {};
+  if (!st.ui || typeof st.ui !== "object" || Array.isArray(st.ui)) st.ui = {};
+
+  return st;
 }
 
 function ensureUIPreferences(st){
@@ -275,7 +319,13 @@ function loadState(){
     localStorage.setItem(STORAGE_KEY, JSON.stringify(st));
     return st;
   }
-  const st = JSON.parse(raw);
+  const parsed = safeParseState(raw);
+  if (!parsed.ok){
+    const st = defaultState();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(st));
+    return st;
+  }
+  const st = validateAndRepairState(migrateState(parsed.value));
 
   // migrations
   if (!st.settings) st.settings = { hourlyRate: 38, vatRate: 0.21 };
@@ -321,6 +371,8 @@ function loadState(){
   }
 
   ensureUIPreferences(st);
+
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(st));
 
   return st;
 }
