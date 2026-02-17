@@ -21,6 +21,34 @@ import { pad2, round2, fmtMoney, fmtClock, formatDurationCompact } from './utils
 const $ = (s) => document.querySelector(s);
 const NAV_TRANSITION_MS = 240;
 const NAV_TRANSITION_EASING = "cubic-bezier(0.22, 0.61, 0.36, 1)";
+const ACTIVATION_KEYS = new Set(["Enter", " ", "Spacebar"]);
+
+function isKeyboardActivation(event){
+  return event.type === "keydown" && ACTIVATION_KEYS.has(event.key);
+}
+
+function maybeOpenSettlementFromEvent(event){
+  if (event.type === "keydown" && !isKeyboardActivation(event)) return false;
+  const target = event.target;
+  if (!(target instanceof Element)) return false;
+  const item = target.closest("[data-open-settlement]");
+  if (!item) return false;
+  const id = item.getAttribute("data-open-settlement");
+  if (!id) return false;
+  if (event.type === "keydown") event.preventDefault();
+  openSheet("settlement", id);
+  return true;
+}
+
+function installSettlementOpenDelegation(){
+  const settlementTab = $("#tab-settlements");
+  settlementTab?.addEventListener("click", maybeOpenSettlementFromEvent);
+  settlementTab?.addEventListener("keydown", maybeOpenSettlementFromEvent);
+
+  const sheetBody = $("#sheetBody");
+  sheetBody?.addEventListener("click", maybeOpenSettlementFromEvent);
+  sheetBody?.addEventListener("keydown", maybeOpenSettlementFromEvent);
+}
 
 const uid = () => Math.random().toString(16).slice(2) + "-" + Math.random().toString(16).slice(2);
 const now = () => Date.now();
@@ -1557,7 +1585,7 @@ function renderSettlements(){
     const grand = round2(pay.invoiceTotal + pay.cashTotal);
 
     return `
-      <div class="item ${visual.accentClass}" data-open-settlement="${s.id}">
+      <div class="item ${visual.accentClass}" data-open-settlement="${s.id}" role="button" tabindex="0">
         <div class="item-main">
           <div class="item-title">${esc(cname(s.customerId))}</div>
           <div class="meta-text" style="margin-top:2px;">
@@ -1587,9 +1615,6 @@ function renderSettlements(){
     openSheet("settlement", s.id);
   });
 
-  el.querySelectorAll("[data-open-settlement]").forEach(x=>{
-    x.addEventListener("click", ()=> openSheet("settlement", x.getAttribute("data-open-settlement")));
-  });
 }
 
 // ---------- Meer tab ----------
@@ -1867,7 +1892,7 @@ function renderCustomerSheet(id){
             const totCash = bucketTotals(s.lines,"cash");
             const grand = round2(totInv.total + totCash.subtotal);
             return `
-              <div class="item ${cls}" data-open-settlement="${s.id}">
+              <div class="item ${cls}" data-open-settlement="${s.id}" role="button" tabindex="0">
                 <div class="item-main">
                   <div class="item-title">${esc(formatDatePretty(s.date))}</div>
                   <div class="item-sub mono tabular">logs ${(s.logIds||[]).length} • totaal ${formatMoneyEUR(grand)}</div>
@@ -1900,9 +1925,6 @@ function renderCustomerSheet(id){
 
   $("#sheetBody").querySelectorAll("[data-open-log]").forEach(x=>{
     x.addEventListener("click", ()=> openSheet("log", x.getAttribute("data-open-log")));
-  });
-  $("#sheetBody").querySelectorAll("[data-open-settlement]").forEach(x=>{
-    x.addEventListener("click", ()=> openSheet("settlement", x.getAttribute("data-open-settlement")));
   });
 }
 
@@ -1968,7 +1990,7 @@ function renderProductSheet(id){
         <div class="item-title">Gebruikt in afrekeningen (recent)</div>
         <div class="list">
           ${usedInSet.map(s=>`
-            <div class="item" data-open-settlement="${s.id}">
+            <div class="item" data-open-settlement="${s.id}" role="button" tabindex="0">
               <div class="item-main">
                 <div class="item-title">${esc(cname(s.customerId))}</div>
                 <div class="item-sub mono">${esc(s.date)} • ${statusLabelNL(s.status)}</div>
@@ -2003,9 +2025,6 @@ function renderProductSheet(id){
 
   $("#sheetBody").querySelectorAll("[data-open-log]").forEach(x=>{
     x.addEventListener("click", ()=> openSheet("log", x.getAttribute("data-open-log")));
-  });
-  $("#sheetBody").querySelectorAll("[data-open-settlement]").forEach(x=>{
-    x.addEventListener("click", ()=> openSheet("settlement", x.getAttribute("data-open-settlement")));
   });
 }
 
@@ -2769,6 +2788,7 @@ const renderer = createRenderer({ getState: () => state, actions: modularActions
 // - Backup export/import still works
 // - Refresh persists state
 installIOSNoZoomGuards();
+installSettlementOpenDelegation();
 setTab("logs");
 renderer.render();
 
