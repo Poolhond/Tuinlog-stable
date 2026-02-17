@@ -292,9 +292,7 @@ function isSettlementEditing(settlementId){
 }
 
 function toggleEditSettlement(settlementId){
-  state.ui.editSettlementId = state.ui.editSettlementId === settlementId ? null : settlementId;
-  saveState();
-  render();
+  actions.setEditSettlement(settlementId);
 }
 
 function ensureCoreProducts(st){
@@ -377,7 +375,7 @@ function loadState(){
   return st;
 }
 
-function saveState(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+function saveState(nextState = state){ localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState)); }
 
 const DEMO = {
   firstNames: ["Jan", "Els", "Koen", "Sofie", "Lotte", "Tom", "An", "Pieter", "Nina", "Wim", "Bram", "Fien", "Arne", "Joke", "Raf", "Mira", "Tine", "Milan"],
@@ -593,7 +591,7 @@ function clearDemoData(st){
   ensureStateSafetyAfterMutations(st);
 }
 
-const state = loadState();
+let state = loadState();
 
 // ---------- Computations ----------
 function sumWorkMs(log){
@@ -923,12 +921,163 @@ const ui = {
   }
 };
 
-function toggleEditLog(logId){
-  state.ui.editLogId = state.ui.editLogId === logId ? null : logId;
-  if (state.ui.editLogId !== logId) ui.logDetailSegmentEditId = null;
-  saveState();
-  renderSheet();
+// Guardrail: keep state mutations inside actions + commit.
+function commit(){
+  state = validateAndRepairState(state);
+  saveState(state);
   render();
+}
+
+const actions = {
+  startLog(customerId){
+    if (!customerId || state.activeLogId) return null;
+    const log = {
+      id: uid(), customerId, date: todayISO(), createdAt: now(), closedAt: null,
+      note: "", segments: [], items: []
+    };
+    openSegment(log, "work");
+    state.logs.unshift(log);
+    state.activeLogId = log.id;
+    commit();
+    return log;
+  },
+  pauseLog(logId){
+    const log = state.logs.find(l => l.id === logId);
+    if (!log) return;
+    const seg = currentOpenSegment(log);
+    if (!seg) openSegment(log, "work");
+    else if (seg.type === "work"){ closeOpenSegment(log); openSegment(log, "break"); }
+    else { closeOpenSegment(log); openSegment(log, "work"); }
+    commit();
+  },
+  stopLog(logId){
+    const log = state.logs.find(l => l.id === logId);
+    if (!log) return;
+    closeOpenSegment(log);
+    log.closedAt = now();
+    state.activeLogId = null;
+    ui.activeLogQuickAdd.open = false;
+    commit();
+  },
+  editLog(logId, updater){
+    const log = state.logs.find(l => l.id === logId);
+    if (!log || typeof updater !== "function") return;
+    updater(log);
+    commit();
+  },
+  deleteLog(logId){
+    state.logs = state.logs.filter(x => x.id !== logId);
+    if (state.activeLogId === logId) state.activeLogId = null;
+    for (const s of state.settlements){
+      s.logIds = (s.logIds || []).filter(id => id !== logId);
+    }
+    commit();
+  },
+  createSettlement(customerId = state.customers[0]?.id || ""){
+    const s = {
+      id: uid(), customerId, date: todayISO(), createdAt: now(), logIds: [], lines: [],
+      status: "draft", markedCalculated: false, isCalculated: false, calculatedAt: null,
+      invoiceAmount: 0, cashAmount: 0, invoicePaid: false, cashPaid: false
+    };
+    state.settlements.unshift(s);
+    commit();
+    return s;
+  },
+  linkLogToSettlement(logId, settlementId){
+    for (const s of state.settlements){ s.logIds = (s.logIds || []).filter(x => x !== logId); }
+    if (settlementId === "none") return commit();
+    if (settlementId === "new"){
+      const log = state.logs.find(l => l.id === logId);
+      if (!log) return;
+      const s = {
+        id: uid(), customerId: log.customerId, date: todayISO(), createdAt: now(), logIds: [logId], lines: [],
+        status: "draft", markedCalculated: false, isCalculated: false, calculatedAt: null,
+        invoiceAmount: 0, cashAmount: 0, invoicePaid: false, cashPaid: false
+      };
+      s.lines = computeSettlementFromLogs(s.customerId, s.logIds).lines;
+      state.settlements.unshift(s);
+      commit();
+      return s;
+    }
+    const s = state.settlements.find(x => x.id === settlementId);
+    if (!s) return commit();
+    s.logIds = Array.from(new Set([...(s.logIds || []), logId]));
+    const prev = new Map((s.lines || []).map(li => [li.productId + "|" + li.description, li.bucket]));
+    s.lines = computeSettlementFromLogs(s.customerId, s.logIds).lines.map(li => ({ ...li, bucket: prev.get(li.productId + "|" + li.description) || li.bucket }));
+    commit();
+    return s;
+  },
+  calculateSettlement(settlementId){
+    const settlement = state.settlements.find(x => x.id === settlementId);
+    if (!settlement) return;
+    calculateSettlement(settlement);
+    commit();
+  },
+  setInvoicePaid(settlementId, paid){
+    const s = state.settlements.find(x => x.id === settlementId);
+    if (!s) return;
+    s.invoicePaid = Boolean(paid);
+    syncSettlementStatus(s);
+    commit();
+  },
+  setCashPaid(settlementId, paid){
+    const s = state.settlements.find(x => x.id === settlementId);
+    if (!s) return;
+    s.cashPaid = Boolean(paid);
+    syncSettlementStatus(s);
+    commit();
+  },
+  deleteSettlement(settlementId){
+    state.settlements = state.settlements.filter(x => x.id !== settlementId);
+    if (state.ui.editSettlementId === settlementId) state.ui.editSettlementId = null;
+    commit();
+  },
+  editSettlement(settlementId, updater){
+    const settlement = state.settlements.find(x => x.id === settlementId);
+    if (!settlement || typeof updater !== "function") return;
+    updater(settlement);
+    commit();
+  },
+  addProduct(product){ state.products.unshift(product); commit(); return product; },
+  updateSettings(hourlyRate, vatRate){
+    state.settings.hourlyRate = round2(hourlyRate);
+    state.settings.vatRate = round2(vatRate);
+    commit();
+  },
+  setEditLog(logId){
+    state.ui.editLogId = state.ui.editLogId === logId ? null : logId;
+    if (state.ui.editLogId !== logId) ui.logDetailSegmentEditId = null;
+    commit();
+  },
+  setEditSettlement(settlementId){
+    state.ui.editSettlementId = state.ui.editSettlementId === settlementId ? null : settlementId;
+    commit();
+  },
+  setLogbook(partial){ state.logbook = { ...(state.logbook || {}), ...partial }; commit(); },
+  addCustomer(customer){ state.customers.unshift(customer); commit(); return customer; },
+  updateCustomer(customerId, patch){
+    const c = state.customers.find(x => x.id === customerId);
+    if (!c) return;
+    Object.assign(c, patch);
+    commit();
+  },
+  deleteCustomer(customerId){ state.customers = state.customers.filter(x => x.id !== customerId); commit(); },
+  updateProduct(productId, patch){
+    const p = state.products.find(x => x.id === productId);
+    if (!p) return;
+    Object.assign(p, patch);
+    commit();
+  },
+  deleteProduct(productId){ state.products = state.products.filter(x => x.id !== productId); commit(); },
+  setBackupFeedback(type, text){
+    state.ui = state.ui || {};
+    state.ui.backupFeedback = { type, text };
+    commit();
+  }
+};
+
+function toggleEditLog(logId){
+  actions.setEditLog(logId);
 }
 
 function preferredWorkProduct(){
@@ -1105,25 +1254,7 @@ $("#btnNewLog").onclick = ()=>{
 };
 
 function createSettlement(){
-  const s = {
-    id: uid(),
-    customerId: state.customers[0]?.id || "",
-    date: todayISO(),
-    createdAt: now(),
-    logIds: [],
-    lines: [],
-    status: "draft",
-    markedCalculated: false,
-    isCalculated: false,
-    calculatedAt: null,
-    invoiceAmount: 0,
-    cashAmount: 0,
-    invoicePaid: false,
-    cashPaid: false
-  };
-  state.settlements.unshift(s);
-  saveState();
-  return s;
+  return actions.createSettlement();
 }
 
 function startWorkLog(customerId){
@@ -1132,22 +1263,9 @@ function startWorkLog(customerId){
     alert("Er is al een actieve werklog.");
     return;
   }
-  const log = {
-    id: uid(),
-    customerId,
-    date: todayISO(),
-    createdAt: now(),
-    closedAt: null,
-    note: "",
-    segments: [],
-    items: []
-  };
-  openSegment(log, "work");
-  state.logs.unshift(log);
-  state.activeLogId = log.id;
-  saveState();
+  const log = actions.startLog(customerId);
+  if (!log) return;
   if (ui.navStack.length > 1) popView();
-  else render();
 }
 
 function openSheet(type, id){
@@ -1418,14 +1536,11 @@ function renderLogs(){
       if (!seg) openSegment(active,"work");
       else if (seg.type === "work"){ closeOpenSegment(active); openSegment(active,"break"); }
       else { closeOpenSegment(active); openSegment(active,"work"); }
-      saveState(); render();
+
+      actions.pauseLog(active.id);
     });
     $("#btnStop")?.addEventListener("click", ()=>{
-      closeOpenSegment(active);
-      active.closedAt = now();
-      state.activeLogId = null;
-      ui.activeLogQuickAdd.open = false;
-      saveState(); render();
+      actions.stopLog(active.id);
     });
     // Tap timer block to open active log detail
     $(".timer-active")?.addEventListener("click", (e)=>{
@@ -1454,42 +1569,40 @@ function renderLogs(){
     x.addEventListener("click", ()=> openSheet("log", x.getAttribute("data-open-log")));
   });
   $("#btnToggleLogFilters")?.addEventListener("click", ()=>{
-    state.logbook.showFilters = !state.logbook.showFilters;
-    saveState();
+
+    actions.setLogbook({ showFilters: !state.logbook.showFilters });
     renderLogs();
   });
   $("#logGroupBy")?.addEventListener("change", ()=>{
-    state.logbook.groupBy = $("#logGroupBy").value || "date";
-    saveState();
+
+    actions.setLogbook({ groupBy: $("#logGroupBy").value || "date" });
     renderLogs();
   });
   $("#btnLogSortDir")?.addEventListener("click", ()=>{
-    state.logbook.sortDir = state.logbook.sortDir === "asc" ? "desc" : "asc";
-    saveState();
+
+    actions.setLogbook({ sortDir: state.logbook.sortDir === "asc" ? "desc" : "asc" });
     renderLogs();
   });
   el.querySelectorAll("[data-log-status]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
-      state.logbook.statusFilter = btn.getAttribute("data-log-status") || "open";
-      saveState();
+
+      actions.setLogbook({ statusFilter: btn.getAttribute("data-log-status") || "open" });
       renderLogs();
     });
   });
   $("#logCustomerFilter")?.addEventListener("change", ()=>{
-    state.logbook.customerId = $("#logCustomerFilter").value || "all";
-    saveState();
+
+    actions.setLogbook({ customerId: $("#logCustomerFilter").value || "all" });
     renderLogs();
   });
   $("#logPeriodFilter")?.addEventListener("change", ()=>{
-    state.logbook.period = $("#logPeriodFilter").value || "all";
-    saveState();
+
+    actions.setLogbook({ period: $("#logPeriodFilter").value || "all" });
     renderLogs();
   });
   $("#btnResetLogFilters")?.addEventListener("click", ()=>{
-    state.logbook.statusFilter = "open";
-    state.logbook.customerId = "all";
-    state.logbook.period = "all";
-    saveState();
+
+    actions.setLogbook({ statusFilter: "open", customerId: "all", period: "all" });
     renderLogs();
   });
 }
@@ -1527,19 +1640,17 @@ function _attachSettingsHandlers(){
   $("#saveSettings").onclick = ()=>{
     const hourly = Number(String($("#settingHourly").value).replace(",", ".") || "0");
     const vatPct = Number(String($("#settingVat").value).replace(",", ".") || "0");
-    state.settings.hourlyRate = round2(hourly);
-    state.settings.vatRate = round2(vatPct / 100);
-    saveState();
+
+    actions.updateSettings(hourly, vatPct / 100);
     alert("Instellingen opgeslagen.");
-    render();
   };
 
   $("#fillDemoBtn").onclick = ()=>{
     if (!confirmAction("Demo data toevoegen voor 3 maanden?")) return;
     const changed = seedDemoMonths(state, { months: 3, force: false });
     if (changed){
-      saveState();
-      render();
+
+      commit();
     } else {
       alert("Demo data bestaat al. Wis eerst demo data om opnieuw te seeden.");
     }
@@ -1554,8 +1665,8 @@ function _attachSettingsHandlers(){
     if (!confirmAction("Alle demo records wissen? Echte data blijft behouden.")) return;
     clearDemoData(state);
     closeSheet();
-    saveState();
-    render();
+
+    commit();
   };
 
   $("#resetAllBtn").onclick = ()=>{
@@ -1802,9 +1913,7 @@ function renderCustomersSheet(){
   `;
 
   body.querySelector("#btnNewCustomer")?.addEventListener("click", ()=>{
-    const c = { id: uid(), nickname:"", name:"", address:"", createdAt: now() };
-    state.customers.unshift(c);
-    saveState();
+    const c = actions.addCustomer({ id: uid(), nickname:"", name:"", address:"", createdAt: now() });
     openSheet("customer", c.id);
   });
 
@@ -1836,9 +1945,7 @@ function renderProductsSheet(){
   `;
 
   body.querySelector("#btnNewProduct")?.addEventListener("click", ()=>{
-    const p = { id: uid(), name:"", unit:"keer", unitPrice:0, vatRate:0.21, defaultBucket:"invoice" };
-    state.products.unshift(p);
-    saveState();
+    const p = actions.addProduct({ id: uid(), name:"", unit:"keer", unitPrice:0, vatRate:0.21, defaultBucket:"invoice" });
     openSheet("product", p.id);
   });
 
@@ -2012,10 +2119,11 @@ function renderCustomerSheet(id){
   `;
 
   $("#saveCustomer").onclick = ()=>{
-    c.nickname = ($("#cNick").value||"").trim();
-    c.name = ($("#cName").value||"").trim();
-    c.address = ($("#cAddr").value||"").trim();
-    saveState(); render();
+    actions.updateCustomer(c.id, {
+      nickname: ($("#cNick").value||"").trim(),
+      name: ($("#cName").value||"").trim(),
+      address: ($("#cAddr").value||"").trim()
+    });
     alert("Opgeslagen.");
   };
 
@@ -2024,8 +2132,8 @@ function renderCustomerSheet(id){
     const hasSet = state.settlements.some(s => s.customerId === c.id);
     if (hasLogs || hasSet){ alert("Kan niet verwijderen: klant heeft logs/afrekeningen."); return; }
     if (!confirmDelete(`Klant: ${c.nickname||c.name||""}`)) return;
-    state.customers = state.customers.filter(x => x.id !== c.id);
-    saveState(); closeSheet();
+    actions.deleteCustomer(c.id);
+    closeSheet();
   };
 
   $("#sheetBody").querySelectorAll("[data-open-log]").forEach(x=>{
@@ -2112,12 +2220,13 @@ function renderProductSheet(id){
   `;
 
   $("#saveProduct").onclick = ()=>{
-    p.name = ($("#pName").value||"").trim();
-    p.unit = ($("#pUnit").value||"").trim() || "keer";
-    p.unitPrice = Number(String($("#pPrice").value).replace(",", ".") || "0");
-    p.vatRate = Number(String($("#pVat").value).replace(",", ".") || "0.21");
-    p.defaultBucket = $("#pBucket").value;
-    saveState(); render();
+    actions.updateProduct(p.id, {
+      name: ($("#pName").value||"").trim(),
+      unit: ($("#pUnit").value||"").trim() || "keer",
+      unitPrice: Number(String($("#pPrice").value).replace(",", ".") || "0"),
+      vatRate: Number(String($("#pVat").value).replace(",", ".") || "0.21"),
+      defaultBucket: $("#pBucket").value
+    });
     alert("Opgeslagen.");
   };
 
@@ -2126,8 +2235,8 @@ function renderProductSheet(id){
       || state.settlements.some(s => (s.lines||[]).some(li => li.productId === p.id));
     if (used){ alert("Kan niet verwijderen: product is gebruikt."); return; }
     if (!confirmDelete(`Product: ${p.name}`)) return;
-    state.products = state.products.filter(x => x.id !== p.id);
-    saveState(); closeSheet();
+    actions.deleteProduct(p.id);
+    closeSheet();
   };
 
   $("#sheetBody").querySelectorAll("[data-open-log]").forEach(x=>{
@@ -2252,19 +2361,20 @@ function renderLogSheet(id){
 
   // wire (autosave)
   $("#logNote").addEventListener("change", ()=>{
-    log.note = ($("#logNote").value||"").trim();
-    saveState();
-    render();
+    actions.editLog(log.id, (draft)=>{
+      draft.note = ($("#logNote").value||"").trim();
+    });
   });
 
   $("#toggleEditLog")?.addEventListener("click", ()=> toggleEditLog(log.id));
 
   $("#addSegment")?.addEventListener("click", ()=>{
-    log.segments = log.segments || [];
-    const seg = { id: uid(), type: "work", start: null, end: null };
-    log.segments.push(seg);
-    ui.logDetailSegmentEditId = seg.id;
-    saveState();
+    const segId = uid();
+    actions.editLog(log.id, (draft)=>{
+      draft.segments = draft.segments || [];
+      draft.segments.push({ id: segId, type: "work", start: null, end: null });
+    });
+    ui.logDetailSegmentEditId = segId;
     renderSheet();
   });
 
@@ -2289,7 +2399,6 @@ function renderLogSheet(id){
           renderSheet();
           return;
         }
-        seg.type = inp.value;
       }
 
       if (field === "start" || field === "end"){
@@ -2300,13 +2409,18 @@ function renderLogSheet(id){
           renderSheet();
           return;
         }
-        seg.start = nextStart;
-        seg.end = nextEnd;
       }
 
-      saveState();
+      actions.editLog(log.id, (draft)=>{
+        const target = (draft.segments||[]).find(x => x.id === segmentId);
+        if (!target) return;
+        if (field === "type") target.type = inp.value;
+        if (field === "start" || field === "end"){
+          target.start = field === "start" ? parseLogTimeToMs(draft.date, inp.value) : target.start;
+          target.end = field === "end" ? parseLogTimeToMs(draft.date, inp.value) : target.end;
+        }
+      });
       renderSheet();
-      render();
     });
   });
 
@@ -2314,11 +2428,11 @@ function renderLogSheet(id){
     btn.addEventListener("click", ()=>{
       const segmentId = btn.getAttribute("data-del-segment");
       if (!confirmDelete("Segment verwijderen")) return;
-      log.segments = (log.segments||[]).filter(s => s.id !== segmentId);
+      actions.editLog(log.id, (draft)=>{
+        draft.segments = (draft.segments||[]).filter(s => s.id !== segmentId);
+      });
       if (ui.logDetailSegmentEditId === segmentId) ui.logDetailSegmentEditId = null;
-      saveState();
       renderSheet();
-      render();
     });
   });
 
@@ -2326,8 +2440,10 @@ function renderLogSheet(id){
     btn.addEventListener("click", ()=>{
       const itemId = btn.getAttribute("data-del-log-item");
       if (!confirmDelete("Item verwijderen")) return;
-      log.items = (log.items||[]).filter(it => it.id !== itemId);
-      saveState(); renderSheet(); render();
+      actions.editLog(log.id, (draft)=>{
+        draft.items = (draft.items||[]).filter(it => it.id !== itemId);
+      });
+      renderSheet();
     });
   });
 
@@ -2337,84 +2453,44 @@ function renderLogSheet(id){
       const field = inp.getAttribute("data-field");
       const it = (log.items||[]).find(x => x.id === itemId);
       if (!it) return;
-      if (field === "qty") it.qty = inp.value === "" ? null : Number(String(inp.value).replace(",", ".") || "0");
-      if (field === "unitPrice") it.unitPrice = inp.value === "" ? null : Number(String(inp.value).replace(",", ".") || "0");
-      if (field === "productId"){
-        it.productId = inp.value;
-        const p = getProduct(inp.value);
-        if (p && (it.unitPrice == null || it.unitPrice === 0)) it.unitPrice = Number(p.unitPrice||0);
-      }
-      saveState(); renderSheet(); render();
+      actions.editLog(log.id, (draft)=>{
+        const target = (draft.items||[]).find(x => x.id === itemId);
+        if (!target) return;
+        if (field === "qty") target.qty = inp.value === "" ? null : Number(String(inp.value).replace(",", ".") || "0");
+        if (field === "unitPrice") target.unitPrice = inp.value === "" ? null : Number(String(inp.value).replace(",", ".") || "0");
+        if (field === "productId"){
+          target.productId = inp.value;
+          const p = getProduct(inp.value);
+          if (p && (target.unitPrice == null || target.unitPrice === 0)) target.unitPrice = Number(p.unitPrice||0);
+        }
+      });
+      renderSheet();
     });
   });
 
   $("#addProductItem").addEventListener("click", ()=>{
     const workProduct = state.products.find(p => (p.name||"").trim().toLowerCase() === "werk") || state.products[0] || null;
     if (!workProduct) return;
-    log.items = log.items || [];
-    log.items.push({ id: uid(), productId: workProduct.id, qty: null, unitPrice: Number(workProduct.unitPrice||0), note:"" });
-    saveState();
+    actions.editLog(log.id, (draft)=>{
+      draft.items = draft.items || [];
+      draft.items.push({ id: uid(), productId: workProduct.id, qty: null, unitPrice: Number(workProduct.unitPrice||0), note:"" });
+    });
     renderSheet();
-    render();
   });
 
   $("#logSettlement").onchange = ()=>{
     if (locked) return;
     const v = $("#logSettlement").value;
-
-    // remove from any settlement first
-    for (const s of state.settlements){
-      s.logIds = (s.logIds||[]).filter(x => x !== log.id);
-    }
-
-    if (v === "none"){
-      // nothing
-    } else if (v === "new"){
-      const s = {
-        id: uid(),
-        customerId: log.customerId,
-        date: todayISO(),
-        createdAt: now(),
-        logIds: [log.id],
-        lines: [],
-        status: "draft",
-        markedCalculated: false,
-        isCalculated: false,
-        calculatedAt: null,
-        invoiceAmount: 0,
-        cashAmount: 0,
-        invoicePaid: false,
-        cashPaid: false
-      };
-      // compute default lines
-      const computed = computeSettlementFromLogs(s.customerId, s.logIds);
-      s.lines = computed.lines;
-      state.settlements.unshift(s);
-      saveState();
-      renderSheet();
-      return;
-    } else {
-      const s = state.settlements.find(x => x.id === v);
-      if (s){
-        s.logIds = Array.from(new Set([...(s.logIds||[]), log.id]));
-        // refresh lines (simple approach): recompute, but preserve existing bucket choices if possible
-        const prev = new Map((s.lines||[]).map(li => [li.productId+"|"+li.description, li.bucket]));
-        const computed = computeSettlementFromLogs(s.customerId, s.logIds);
-        s.lines = computed.lines.map(li => ({
-          ...li,
-          bucket: prev.get(li.productId+"|"+li.description) || li.bucket
-        }));
-      }
-    }
-    saveState(); renderSheet(); render();
+    actions.linkLogToSettlement(log.id, v);
+    renderSheet();
   };
 
   $("#delLog").onclick = ()=>{
     if (state.activeLogId === log.id){ alert("Stop eerst je actieve log."); return; }
     if (af){ alert("Ontkoppel eerst van afrekening (of verwijder afrekening)."); return; }
     if (!confirmDelete(`Werklog ${log.date} — ${cname(log.customerId)}`)) return;
-    state.logs = state.logs.filter(x => x.id !== log.id);
-    saveState(); closeSheet();
+    actions.deleteLog(log.id);
+    closeSheet();
   };
 }
 
@@ -2675,18 +2751,16 @@ function renderSettlementSheet(id){
   `;
 
   $('#toggleCalculated')?.addEventListener('click', ()=>{
-    calculateSettlement(s);
-    saveState(); renderSheet(); render();
+    actions.calculateSettlement(s.id);
+    renderSheet();
   });
   $('#toggleInvoicePaid')?.addEventListener('click', ()=>{
-    s.invoicePaid = !s.invoicePaid;
-    syncSettlementStatus(s);
-    saveState(); renderSheet(); render();
+    actions.setInvoicePaid(s.id, !s.invoicePaid);
+    renderSheet();
   });
   $('#toggleCashPaid')?.addEventListener('click', ()=>{
-    s.cashPaid = !s.cashPaid;
-    syncSettlementStatus(s);
-    saveState(); renderSheet(); render();
+    actions.setCashPaid(s.id, !s.cashPaid);
+    renderSheet();
   });
 
   if (!isEdit){
@@ -2701,24 +2775,27 @@ function renderSettlementSheet(id){
   if (isEdit){
     $('#delSettlement')?.addEventListener('click', ()=>{
       if (!confirmDelete(`Afrekening ${formatDatePretty(s.date)} — ${cname(s.customerId)}`)) return;
-      state.settlements = state.settlements.filter(x => x.id !== s.id);
-      if (state.ui.editSettlementId === s.id) state.ui.editSettlementId = null;
-      saveState();
+      actions.deleteSettlement(s.id);
       closeSheet();
     });
 
     $('#sCustomer')?.addEventListener('change', ()=>{
-      s.customerId = $('#sCustomer').value;
-      s.logIds = [];
-      saveState(); renderSheet(); render();
+      actions.editSettlement(s.id, (draft)=>{
+        draft.customerId = $('#sCustomer').value;
+        draft.logIds = [];
+      });
+      renderSheet();
     });
     $('#sDate')?.addEventListener('change', ()=>{
-      s.date = ($('#sDate').value||'').trim() || todayISO();
-      saveState(); renderSheet(); render();
+      actions.editSettlement(s.id, (draft)=>{
+        draft.date = ($('#sDate').value||'').trim() || todayISO();
+      });
+      renderSheet();
     });
     $('#sNote')?.addEventListener('change', ()=>{
-      s.note = ($('#sNote').value || '').trim();
-      saveState(); render();
+      actions.editSettlement(s.id, (draft)=>{
+        draft.note = ($('#sNote').value || '').trim();
+      });
     });
 
     $('#sheetBody').querySelectorAll('[data-logpick]').forEach(cb=>{
@@ -2730,39 +2807,49 @@ function renderSettlementSheet(id){
           cb.checked = false;
           return;
         }
-        if (cb.checked) s.logIds = Array.from(new Set([...(s.logIds||[]), logId]));
-        else s.logIds = (s.logIds||[]).filter(x => x !== logId);
-        saveState(); renderSheet(); render();
+        actions.editSettlement(s.id, (draft)=>{
+          if (cb.checked) draft.logIds = Array.from(new Set([...(draft.logIds||[]), logId]));
+          else draft.logIds = (draft.logIds||[]).filter(x => x !== logId);
+        });
+        renderSheet();
       });
     });
 
     $('#btnRecalc')?.addEventListener('click', ()=>{
-      calculateSettlement(s);
-      saveState(); renderSheet(); render();
+      actions.calculateSettlement(s.id);
+      renderSheet();
     });
 
     $('#sheetBody').querySelectorAll('[data-line-qty]').forEach(inp=>{
       inp.addEventListener('change', ()=>{
         const line = s.lines.find(x=>x.id===inp.getAttribute('data-line-qty'));
         if (!line) return;
-        line.qty = Number(String(inp.value).replace(',', '.')||'0');
-        saveState(); renderSheet(); render();
+        actions.editSettlement(s.id, (draft)=>{
+          const target = draft.lines.find(x=>x.id===inp.getAttribute('data-line-qty'));
+          if (target) target.qty = Number(String(inp.value).replace(',', '.')||'0');
+        });
+        renderSheet();
       });
     });
     $('#sheetBody').querySelectorAll('[data-line-price]').forEach(inp=>{
       inp.addEventListener('change', ()=>{
         const line = s.lines.find(x=>x.id===inp.getAttribute('data-line-price'));
         if (!line) return;
-        line.unitPrice = Number(String(inp.value).replace(',', '.')||'0');
-        saveState(); renderSheet(); render();
+        actions.editSettlement(s.id, (draft)=>{
+          const target = draft.lines.find(x=>x.id===inp.getAttribute('data-line-price'));
+          if (target) target.unitPrice = Number(String(inp.value).replace(',', '.')||'0');
+        });
+        renderSheet();
       });
     });
     $('#sheetBody').querySelectorAll('[data-line-del]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const lineId = btn.getAttribute('data-line-del');
         if (!confirmDelete('Regel verwijderen')) return;
-        s.lines = (s.lines||[]).filter(x=>x.id!==lineId);
-        saveState(); renderSheet(); render();
+        actions.editSettlement(s.id, (draft)=>{
+          draft.lines = (draft.lines||[]).filter(x=>x.id!==lineId);
+        });
+        renderSheet();
       });
     });
     $('#sheetBody').querySelectorAll('[data-line-product]').forEach(sel=>{
@@ -2771,24 +2858,28 @@ function renderSettlementSheet(id){
         if (!line) return;
         const productId = sel.value || null;
         const product = productId ? getProduct(productId) : null;
-        line.productId = productId;
-        if (product){
-          line.name = product.name;
-          line.description = product.name;
-          line.unitPrice = Number(product.unitPrice || 0);
-          if ((line.bucket || 'invoice') === 'invoice') line.vatRate = Number(product.vatRate ?? 0.21);
-        }
-        saveState(); renderSheet(); render();
+        actions.editSettlement(s.id, (draft)=>{
+          const target = draft.lines.find(x=>x.id===sel.getAttribute('data-line-product'));
+          if (!target) return;
+          target.productId = productId;
+          if (product){
+            target.name = product.name;
+            target.description = product.name;
+            target.unitPrice = Number(product.unitPrice || 0);
+            if ((target.bucket || 'invoice') === 'invoice') target.vatRate = Number(product.vatRate ?? 0.21);
+          }
+        });
+        renderSheet();
       });
     });
 
     $('#addInvoiceLine')?.addEventListener('click', ()=>{
-      addSettlementLine(s, 'invoice');
-      saveState(); renderSheet(); render();
+      actions.editSettlement(s.id, (draft)=> addSettlementLine(draft, 'invoice'));
+      renderSheet();
     });
     $('#addCashLine')?.addEventListener('click', ()=>{
-      addSettlementLine(s, 'cash');
-      saveState(); renderSheet(); render();
+      actions.editSettlement(s.id, (draft)=> addSettlementLine(draft, 'cash'));
+      renderSheet();
     });
 
   }
