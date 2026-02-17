@@ -1029,40 +1029,38 @@ h2{
   border:0;
   border-bottom:1px solid var(--border);
   background:transparent;
-  padding:12px 4px;
+  padding:12px 4px 12px 10px;
 }
 .flat-list .item:last-child{
   border-bottom:0;
 }
-/* Preserve status color accents in flat lists */
-.flat-list .item.status-linked{
-  background: var(--status-linked-bg);
-  border-left:4px solid var(--status-linked-border);
-  padding-left:10px;
+
+.listRow{
+  position:relative;
 }
-.flat-list .item.status-calculated{
-  background: var(--status-calculated-bg);
-  border-left:4px solid var(--status-calculated-border);
-  padding-left:10px;
+
+.listRow::before{
+  content:"";
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width:3px;
+  border-radius:2px;
+  background:transparent;
 }
-.flat-list .item.status-paid{
-  background: var(--status-paid-bg);
-  border-left:4px solid var(--status-paid-border);
-  padding-left:10px;
+
+.listRow.rowStatus-linked::before{
+  background:rgba(78, 134, 255, 0.88);
 }
-.flat-list .item.card-accent--open{
-  border-left:3px solid rgba(255,204,0,.72);
-  padding-left:10px;
+
+.listRow.rowStatus-calculated::before,
+.listRow.rowStatus-open::before{
+  background:rgba(255, 140, 0, 0.9);
 }
-.flat-list .item.card-accent--calculated{
-  background: var(--status-calculated-bg);
-  border-left:3px solid rgba(255,140,0,.82);
-  padding-left:10px;
-}
-.flat-list .item.card-accent--paid{
-  background: var(--status-paid-bg);
-  border-left:3px solid rgba(0,160,90,.82);
-  padding-left:10px;
+
+.listRow.rowStatus-paid::before{
+  background:rgba(0, 160, 90, 0.9);
 }
 
 /* ====== REFACTOR: Timer-first UX ====== */
