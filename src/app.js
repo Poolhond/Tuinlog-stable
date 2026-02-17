@@ -1255,9 +1255,33 @@ function setupEdgeSwipeBackGesture(){
   const detailPage = $("#detailPage");
   if (!rootPage || !detailPage) return;
 
+  // iOS swipe-back
+  const EDGE_ZONE_PX = 12;
+  const DIRECTION_LOCK_PX = 10;
+  const COMPLETE_PROGRESS = 0.33;
+  const COMPLETE_VELOCITY = 0.55;
+  const SWIPE_DURATION_MS = 220;
+  const SWIPE_EASING = "cubic-bezier(0.2, 0.8, 0.2, 1)";
+
+  const dimOverlay = document.createElement("div");
+  dimOverlay.setAttribute("aria-hidden", "true");
+  Object.assign(dimOverlay.style, {
+    position: "absolute",
+    inset: "0",
+    background: "rgba(0,0,0,0.08)",
+    opacity: "0",
+    pointerEvents: "none",
+    transition: "none",
+    willChange: "opacity"
+  });
+  if (getComputedStyle(rootPage).position === "static") rootPage.style.position = "relative";
+  rootPage.appendChild(dimOverlay);
+
   const gesture = {
     active: false,
-    dragging: false,
+    confirmed: false,
+    cancelled: false,
+    touchId: null,
     pointerId: null,
     startX: 0,
     startY: 0,
@@ -1265,79 +1289,118 @@ function setupEdgeSwipeBackGesture(){
     lastX: 0,
     lastTime: 0,
     velocityX: 0,
+    width: 1,
     frame: null,
-    width: 0,
-    usingTouchFallback: false
+    usedInput: null,
+    scrollableY: null
+  };
+
+  const findScrollableY = (el)=>{
+    let node = el;
+    while (node && node !== detailPage && node instanceof HTMLElement){
+      const style = getComputedStyle(node);
+      const canScrollY = (style.overflowY === "auto" || style.overflowY === "scroll") && node.scrollHeight > node.clientHeight;
+      if (canScrollY) return node;
+      node = node.parentElement;
+    }
+    return null;
+  };
+
+  const clampDx = ()=> Math.max(0, Math.min(gesture.currentX - gesture.startX, gesture.width));
+
+  const applyDragTransforms = ()=>{
+    const dx = clampDx();
+    const progress = dx / Math.max(1, gesture.width);
+    detailPage.style.transform = `translateX(${dx}px)`;
+    rootPage.style.transform = `translateX(${(-0.2 * gesture.width) + (dx * 0.12)}px)`;
+    dimOverlay.style.opacity = `${Math.max(0, 1 - progress)}`;
   };
 
   const queueFrame = ()=>{
     if (gesture.frame) return;
     gesture.frame = requestAnimationFrame(()=>{
       gesture.frame = null;
-      if (!gesture.dragging) return;
-      const dx = Math.max(0, Math.min(gesture.currentX - gesture.startX, gesture.width));
-      rootPage.style.transform = `translateX(${(-0.2 * gesture.width) + (dx * 0.12)}px)`;
-      detailPage.style.transform = `translateX(${dx}px)`;
+      if (!gesture.confirmed) return;
+      applyDragTransforms();
     });
   };
 
-  const resetGestureStyles = ()=>{
+  const clearFrame = ()=>{
+    if (!gesture.frame) return;
+    cancelAnimationFrame(gesture.frame);
+    gesture.frame = null;
+  };
+
+  const cleanupStyles = ()=>{
     detailPage.style.transition = "";
     rootPage.style.transition = "";
+    dimOverlay.style.transition = "";
     detailPage.style.transform = "";
     rootPage.style.transform = "";
+    dimOverlay.style.opacity = "0";
+    detailPage.style.willChange = "";
+    rootPage.style.willChange = "";
+    rootPage.style.overflowX = "";
+    detailPage.style.overflowX = "";
   };
 
   const resetGestureState = ()=>{
+    clearFrame();
     gesture.active = false;
-    gesture.dragging = false;
+    gesture.confirmed = false;
+    gesture.cancelled = false;
+    gesture.touchId = null;
     gesture.pointerId = null;
-    if (gesture.frame){
-      cancelAnimationFrame(gesture.frame);
-      gesture.frame = null;
-    }
+    gesture.usedInput = null;
+    gesture.scrollableY = null;
+  };
+
+  const beginConfirmedSwipe = ()=>{
+    gesture.confirmed = true;
+    detailPage.style.transition = "none";
+    rootPage.style.transition = "none";
+    dimOverlay.style.transition = "none";
+    detailPage.style.willChange = "transform";
+    rootPage.style.willChange = "transform";
+    rootPage.style.overflowX = "hidden";
+    detailPage.style.overflowX = "hidden";
+    rootPage.style.transform = `translateX(${-0.2 * gesture.width}px)`;
+    detailPage.style.transform = "translateX(0px)";
+    dimOverlay.style.opacity = "1";
+  };
+
+  const animateTo = (targetX, done)=>{
+    detailPage.style.transition = `transform ${SWIPE_DURATION_MS}ms ${SWIPE_EASING}`;
+    rootPage.style.transition = `transform ${SWIPE_DURATION_MS}ms ${SWIPE_EASING}`;
+    dimOverlay.style.transition = `opacity ${SWIPE_DURATION_MS}ms ${SWIPE_EASING}`;
+    detailPage.style.transform = `translateX(${targetX}px)`;
+    rootPage.style.transform = `translateX(${(-0.2 * gesture.width) + (targetX * 0.12)}px)`;
+    dimOverlay.style.opacity = `${Math.max(0, 1 - (targetX / Math.max(1, gesture.width)))}`;
+    setTimeout(()=>{
+      cleanupStyles();
+      resetGestureState();
+      done?.();
+    }, SWIPE_DURATION_MS);
   };
 
   const cancelSwipe = ()=>{
-    if (!gesture.dragging) return resetGestureState();
-    detailPage.style.transition = `transform ${NAV_TRANSITION_MS}ms ${NAV_TRANSITION_EASING}`;
-    rootPage.style.transition = `transform ${NAV_TRANSITION_MS}ms ${NAV_TRANSITION_EASING}`;
-    detailPage.style.transform = "translateX(0px)";
-    rootPage.style.transform = `translateX(${-0.2 * gesture.width}px)`;
-    setTimeout(()=>{
-      resetGestureStyles();
-      resetGestureState();
-    }, NAV_TRANSITION_MS);
+    if (!gesture.confirmed) return resetGestureState();
+    animateTo(0);
   };
 
   const finishSwipe = ()=>{
-    if (!gesture.dragging) return resetGestureState();
-    detailPage.style.transition = `transform ${NAV_TRANSITION_MS}ms ${NAV_TRANSITION_EASING}`;
-    rootPage.style.transition = `transform ${NAV_TRANSITION_MS}ms ${NAV_TRANSITION_EASING}`;
-    detailPage.style.transform = `translateX(${gesture.width}px)`;
-    rootPage.style.transform = "translateX(0px)";
-    setTimeout(()=>{
-      resetGestureStyles();
-      resetGestureState();
-      popViewInstant();
-    }, NAV_TRANSITION_MS);
+    if (!gesture.confirmed) return resetGestureState();
+    animateTo(gesture.width, ()=>popViewInstant());
   };
 
-  const beginDrag = ()=>{
-    gesture.dragging = true;
-    gesture.width = window.innerWidth || detailPage.clientWidth || 1;
-    detailPage.style.transition = "none";
-    rootPage.style.transition = "none";
-    rootPage.style.transform = `translateX(${-0.2 * gesture.width}px)`;
-    detailPage.style.transform = "translateX(0px)";
-  };
+  const onStart = (x, y, target, inputType)=>{
+    if (gesture.active || ui.navStack.length <= 1) return false;
+    if (!detailPage.classList.contains("active")) return false;
+    if (x > EDGE_ZONE_PX) return false;
 
-  const onStart = (x, y)=>{
-    if (ui.navStack.length <= 1) return;
-    if (!detailPage.classList.contains("active")) return;
-    if (x > 20) return;
     gesture.active = true;
-    gesture.dragging = false;
+    gesture.confirmed = false;
+    gesture.cancelled = false;
     gesture.startX = x;
     gesture.startY = y;
     gesture.currentX = x;
@@ -1345,80 +1408,108 @@ function setupEdgeSwipeBackGesture(){
     gesture.lastTime = performance.now();
     gesture.velocityX = 0;
     gesture.width = window.innerWidth || detailPage.clientWidth || 1;
+    gesture.usedInput = inputType;
+    gesture.scrollableY = findScrollableY(target);
+    return true;
   };
 
   const onMove = (x, y, rawEvent)=>{
-    if (!gesture.active) return;
+    if (!gesture.active || gesture.cancelled) return;
 
     const dx = x - gesture.startX;
     const dy = y - gesture.startY;
+    const absDx = Math.abs(dx);
+    const absDy = Math.abs(dy);
 
-    if (!gesture.dragging){
-      if (Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)){
+    if (!gesture.confirmed){
+      const verticalDominant = absDy > DIRECTION_LOCK_PX && absDy > absDx;
+      const scrollingInsideList = Boolean(gesture.scrollableY && gesture.scrollableY.scrollTop > 0 && absDy > absDx);
+      if (scrollingInsideList || verticalDominant){
+        // iOS swipe-back: never hijack vertical scroll gestures in nested lists.
+        gesture.cancelled = true;
         resetGestureState();
         return;
       }
-      if (dx > 6 && Math.abs(dx) > Math.abs(dy)) beginDrag();
+      if (absDx > DIRECTION_LOCK_PX && absDx > absDy && dx > 0) beginConfirmedSwipe();
       else return;
     }
 
     if (rawEvent?.cancelable) rawEvent.preventDefault();
-
-    const nowTime = performance.now();
-    const dt = Math.max(1, nowTime - gesture.lastTime);
+    const now = performance.now();
+    const dt = Math.max(1, now - gesture.lastTime);
     gesture.velocityX = (x - gesture.lastX) / dt;
     gesture.lastX = x;
-    gesture.lastTime = nowTime;
+    gesture.lastTime = now;
     gesture.currentX = x;
     queueFrame();
   };
 
   const onEnd = ()=>{
     if (!gesture.active) return;
-    if (!gesture.dragging) return resetGestureState();
+    if (!gesture.confirmed) return resetGestureState();
 
-    const dragged = Math.max(0, gesture.currentX - gesture.startX);
-    const progress = dragged / Math.max(1, gesture.width);
-    const isFast = gesture.velocityX > 0.5;
-    if (progress > 0.3 || isFast) finishSwipe();
+    const dx = clampDx();
+    const progress = dx / Math.max(1, gesture.width);
+    if (progress > COMPLETE_PROGRESS || gesture.velocityX > COMPLETE_VELOCITY) finishSwipe();
     else cancelSwipe();
   };
+
+  const getTouchById = (touchList, id)=>{
+    if (id == null) return null;
+    for (let i = 0; i < touchList.length; i += 1){
+      const t = touchList[i];
+      if (t.identifier === id) return t;
+    }
+    return null;
+  };
+
+  detailPage.addEventListener("touchstart", (e)=>{
+    const touch = e.changedTouches?.[0];
+    if (!touch) return;
+    const started = onStart(touch.clientX, touch.clientY, e.target, "touch");
+    if (started) gesture.touchId = touch.identifier;
+  }, { passive: false });
+
+  detailPage.addEventListener("touchmove", (e)=>{
+    const touch = getTouchById(e.changedTouches, gesture.touchId) || getTouchById(e.touches, gesture.touchId);
+    if (!touch) return;
+    onMove(touch.clientX, touch.clientY, e);
+  }, { passive: false });
+
+  detailPage.addEventListener("touchend", (e)=>{
+    if (!getTouchById(e.changedTouches, gesture.touchId)) return;
+    onEnd();
+  }, { passive: false });
+
+  detailPage.addEventListener("touchcancel", (e)=>{
+    if (!getTouchById(e.changedTouches, gesture.touchId)) return;
+    cancelSwipe();
+  }, { passive: false });
 
   if (window.PointerEvent){
     detailPage.addEventListener("pointerdown", (e)=>{
       if (e.pointerType === "mouse") return;
-      onStart(e.clientX, e.clientY);
-      if (gesture.active) gesture.pointerId = e.pointerId;
-    });
-    detailPage.addEventListener("pointermove", (e)=>{
-      if (gesture.pointerId !== e.pointerId) return;
-      onMove(e.clientX, e.clientY, e);
-    });
-    detailPage.addEventListener("pointerup", (e)=>{
-      if (gesture.pointerId !== e.pointerId) return;
-      onEnd();
-    });
-    detailPage.addEventListener("pointercancel", (e)=>{
-      if (gesture.pointerId !== e.pointerId) return;
-      cancelSwipe();
-    });
-    return;
-  }
+      const started = onStart(e.clientX, e.clientY, e.target, "pointer");
+      if (started) gesture.pointerId = e.pointerId;
+    }, { passive: false });
 
-  gesture.usingTouchFallback = true;
-  detailPage.addEventListener("touchstart", (e)=>{
-    const touch = e.changedTouches?.[0];
-    if (!touch) return;
-    onStart(touch.clientX, touch.clientY);
-  }, { passive: true });
-  detailPage.addEventListener("touchmove", (e)=>{
-    const touch = e.changedTouches?.[0];
-    if (!touch) return;
-    onMove(touch.clientX, touch.clientY, e);
-  }, { passive: false });
-  detailPage.addEventListener("touchend", onEnd, { passive: true });
-  detailPage.addEventListener("touchcancel", cancelSwipe, { passive: true });
+    detailPage.addEventListener("pointermove", (e)=>{
+      if (gesture.pointerId !== e.pointerId || gesture.usedInput === "touch") return;
+      onMove(e.clientX, e.clientY, e);
+    }, { passive: false });
+
+    detailPage.addEventListener("pointerup", (e)=>{
+      if (gesture.pointerId !== e.pointerId || gesture.usedInput === "touch") return;
+      onEnd();
+    }, { passive: false });
+
+    detailPage.addEventListener("pointercancel", (e)=>{
+      if (gesture.pointerId !== e.pointerId || gesture.usedInput === "touch") return;
+      cancelSwipe();
+    }, { passive: false });
+  }
 }
+
 
 $("#nav-logs").addEventListener("click", ()=>setTab("logs"));
 $("#nav-settlements").addEventListener("click", ()=>setTab("settlements"));
