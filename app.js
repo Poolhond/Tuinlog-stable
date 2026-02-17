@@ -685,12 +685,76 @@ function getSettlementTotals(settlement){
     cashTotal: cashTotals.subtotal
   };
 }
+function isSettlementCalculated(settlement){
+  return Boolean(
+    settlement?.isCalculated ||
+    settlement?.markedCalculated ||
+    settlement?.status === "calculated" ||
+    settlement?.status === "paid" ||
+    settlement?.calculatedAt
+  );
+}
+function getSettlementAmounts(settlement){
+  const totals = getSettlementTotals(settlement || {});
+  return {
+    invoice: Number(settlement?.invoiceAmount ?? totals.invoiceTotal ?? 0),
+    cash: Number(settlement?.cashAmount ?? totals.cashTotal ?? 0)
+  };
+}
+function getSettlementPaymentFlags(settlement){
+  return {
+    invoicePaid: Boolean(settlement?.invoicePaid),
+    cashPaid: Boolean(settlement?.cashPaid)
+  };
+}
+function getSettlementIconPresentation(settlement){
+  const calculated = isSettlementCalculated(settlement);
+  const amounts = getSettlementAmounts(settlement);
+  const flags = getSettlementPaymentFlags(settlement);
+
+  const icons = [
+    {
+      type: "invoice",
+      show: calculated && amounts.invoice > 0,
+      color: flags.invoicePaid ? "green" : "orange"
+    },
+    {
+      type: "cash",
+      show: calculated && amounts.cash > 0,
+      color: flags.cashPaid ? "green" : "orange"
+    }
+  ];
+
+  /*
+    Sanity examples:
+    - not calculated -> [] (no icons shown because both show=false)
+    - calculated + invoice>0 + cash=0 -> [invoice icon]
+    - calculated + invoice>0 + cash>0 -> [invoice + cash]
+    - paid=true -> green, paid=false -> orange
+  */
+  return icons;
+}
+function getLogPresentation(log, sourceState){
+  const settlement = (sourceState?.settlements || []).find(s => (s.logIds || []).includes(log?.id));
+  if (!settlement) return { state: "free" };
+
+  const icons = getSettlementIconPresentation(settlement);
+  const visibleIcons = icons.filter(icon => icon.show);
+  const allVisiblePaid = visibleIcons.length > 0 && visibleIcons.every(icon => icon.color === "green");
+
+  if (allVisiblePaid) return { state: "paid", settlement };
+  if (isSettlementCalculated(settlement)) return { state: "calculated", settlement };
+  return { state: "linked", settlement };
+}
 function getSettlementVisualState(settlement){
   if (!settlement) return { state: "open", accentClass: "card-accent--open", navClass: "nav--linked" };
-  if (settlement.invoicePaid && settlement.cashPaid){
+  const iconPresentation = getSettlementIconPresentation(settlement);
+  const visibleIcons = iconPresentation.filter(icon => icon.show);
+  const isPaid = visibleIcons.length > 0 && visibleIcons.every(icon => icon.color === "green");
+  if (isPaid){
     return { state: "paid", accentClass: "card-accent--paid", navClass: "nav--paid" };
   }
-  if (settlement.markedCalculated || settlement.status === "calculated"){
+  if (isSettlementCalculated(settlement)){
     return { state: "calculated", accentClass: "card-accent--calculated", navClass: "nav--calculated" };
   }
   return { state: "draft", accentClass: "card-accent--open", navClass: "nav--linked" };
@@ -711,7 +775,8 @@ function settlementVisualState(settlement){
   return "linked";
 }
 function logStatus(logId){
-  return settlementVisualState(settlementForLog(logId));
+  const log = state.logs.find(item => item.id === logId);
+  return getLogPresentation(log, state).state;
 }
 function isLogLinkedElsewhere(logId, currentSettlementId){
   return state.settlements.some(s =>
@@ -779,8 +844,10 @@ function settlementPaymentState(settlement){
 
 function syncSettlementStatus(settlement){
   if (!settlement) return;
-  settlement.isCalculated = Boolean(settlement.markedCalculated || settlement.isCalculated || settlement.calculatedAt);
-  if (settlement.invoicePaid && settlement.cashPaid && settlement.isCalculated){
+  settlement.isCalculated = isSettlementCalculated(settlement);
+  const iconPresentation = getSettlementIconPresentation(settlement).filter(icon => icon.show);
+  const isPaid = iconPresentation.length > 0 && iconPresentation.every(icon => icon.color === "green");
+  if (isPaid && settlement.isCalculated){
     settlement.status = "paid";
   } else {
     settlement.status = settlement.isCalculated ? "calculated" : "draft";
@@ -2418,10 +2485,6 @@ function settlementLogbookSummary(s){
   return { linkedCount: linkedLogs.length, totalWorkMs, totalProductCosts, totalLogPrice };
 }
 
-function settlementIsCalculated(settlement){
-  return Boolean(settlement?.isCalculated || settlement?.markedCalculated || settlement?.status === "calculated" || settlement?.status === "paid" || settlement?.calculatedAt);
-}
-
 function syncSettlementAmounts(settlement){
   if (!settlement) return;
   const totals = getSettlementTotals(settlement);
@@ -2430,7 +2493,7 @@ function syncSettlementAmounts(settlement){
 }
 
 function renderSettlementStatusIcons(settlement){
-  const isCalculated = settlementIsCalculated(settlement);
+  const isCalculated = isSettlementCalculated(settlement);
   if (!isCalculated){
     return `
       <button class="status-icon-chip status-icon-calc is-open" id="toggleCalculated" type="button" aria-label="Bereken afrekening">
@@ -2439,17 +2502,20 @@ function renderSettlementStatusIcons(settlement){
     `;
   }
 
+  const iconPresentation = getSettlementIconPresentation(settlement);
   const chips = [];
-  if (Number(settlement.invoiceAmount || 0) > 0){
+  const invoiceIcon = iconPresentation.find(icon => icon.type === "invoice");
+  if (invoiceIcon?.show){
     chips.push(`
-      <button class="status-icon-chip ${settlement.invoicePaid ? "is-paid" : "is-open"}" id="toggleInvoicePaid" type="button" aria-pressed="${settlement.invoicePaid ? "true" : "false"}" aria-label="Factuur ${settlement.invoicePaid ? "betaald" : "open"}">
+      <button class="status-icon-chip ${invoiceIcon.color === "green" ? "is-paid" : "is-open"}" id="toggleInvoicePaid" type="button" aria-pressed="${settlement.invoicePaid ? "true" : "false"}" aria-label="Factuur ${settlement.invoicePaid ? "betaald" : "open"}">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="2.5" y="5.5" width="19" height="13" rx="2.5"></rect><path d="M2.5 10h19" stroke-linecap="round"></path><path d="M7 14.5h4" stroke-linecap="round"></path></svg>
       </button>
     `);
   }
-  if (Number(settlement.cashAmount || 0) > 0){
+  const cashIcon = iconPresentation.find(icon => icon.type === "cash");
+  if (cashIcon?.show){
     chips.push(`
-      <button class="status-icon-chip ${settlement.cashPaid ? "is-paid" : "is-open"}" id="toggleCashPaid" type="button" aria-pressed="${settlement.cashPaid ? "true" : "false"}" aria-label="Cash ${settlement.cashPaid ? "betaald" : "open"}">
+      <button class="status-icon-chip ${cashIcon.color === "green" ? "is-paid" : "is-open"}" id="toggleCashPaid" type="button" aria-pressed="${settlement.cashPaid ? "true" : "false"}" aria-label="Cash ${settlement.cashPaid ? "betaald" : "open"}">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="8.5" cy="12" r="3.5"></circle><circle cx="15.5" cy="12" r="3.5"></circle><path d="M12 8.5v7" stroke-linecap="round"></path></svg>
       </button>
     `);
@@ -2525,7 +2591,7 @@ function renderSettlementSheet(id){
   if (!("invoicePaid" in s)) s.invoicePaid = false;
   if (!("cashPaid" in s)) s.cashPaid = false;
   if (!("markedCalculated" in s)) s.markedCalculated = s.status === "calculated";
-  if (!("isCalculated" in s)) s.isCalculated = settlementIsCalculated(s);
+  if (!("isCalculated" in s)) s.isCalculated = isSettlementCalculated(s);
   if (!("calculatedAt" in s)) s.calculatedAt = s.isCalculated ? (s.createdAt || now()) : null;
   ensureDefaultSettlementLines(s);
   syncSettlementStatus(s);
