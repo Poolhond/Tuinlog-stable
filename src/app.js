@@ -2792,51 +2792,56 @@ if ("serviceWorker" in navigator){
 }
 
 // init
-nav = createNav();
-ui.navStack = nav.navStack;
-const modularActions = createActions({ getState: () => state, setState: (next) => { state = next; }, commit });
-const renderer = createRenderer({ getState: () => state, actions: modularActions, nav, renderImpl: render });
+try {
+  nav = createNav();
+  ui.navStack = nav.navStack;
+  const modularActions = createActions({ getState: () => state, setState: (next) => { state = next; }, commit });
+  const renderer = createRenderer({ getState: () => state, actions: modularActions, nav, renderImpl: render });
 
-// Quick checks:
-// - Start log -> stop log works
-// - Create settlement -> calculate -> icons correct
-// - Backup export/import still works
-// - Refresh persists state
-installIOSNoZoomGuards();
-installSettlementOpenDelegation();
-setTab("logs");
-renderer.render();
+  // Quick checks:
+  // - Start log -> stop log works
+  // - Create settlement -> calculate -> icons correct
+  // - Backup export/import still works
+  // - Refresh persists state
+  installIOSNoZoomGuards();
+  installSettlementOpenDelegation();
+  setTab("logs");
+  renderer.render();
 
-const engineStore = createStore({
-  reducer: rootReducer,
-  preloadedState: createRootState(state),
-  effects: createEffects()
-});
+  const engineStore = createStore({
+    reducer: rootReducer,
+    preloadedState: createRootState(state),
+    effects: createEffects()
+  });
 
-engineStore.subscribe(()=>{
-  const nextRoot = engineStore.getState();
-  state = nextRoot.data;
-});
+  engineStore.subscribe(()=>{
+    const nextRoot = engineStore.getState();
+    state = nextRoot.data;
+  });
 
-window.__TL__ = {
-  getState: () => engineStore.getState(),
-  dispatch: engineStore.dispatch,
-  actions: engineActions,
-  selectors
-};
+  window.__TL__ = {
+    getState: () => engineStore.getState(),
+    dispatch: engineStore.dispatch,
+    actions: engineActions,
+    selectors
+  };
 
-// Timer tick: update active timer display every 15 seconds
-setInterval(()=>{
-  if (state.activeLogId && ui.navStack[0]?.view === "logs" && ui.navStack.length === 1){
-    const elapsedEl = document.querySelector(".timer-active-elapsed");
-    const metaEl = document.querySelector(".timer-active-meta");
-    if (elapsedEl){
-      const active = state.logs.find(l => l.id === state.activeLogId);
-      if (active){
-        elapsedEl.textContent = durMsToHM(sumWorkMs(active));
-        const isPaused = currentOpenSegment(active)?.type === "break";
-        if (metaEl) metaEl.textContent = `${isPaused ? "Pauze" : "Actief"} · gestart ${fmtClock(active.createdAt)}`;
+  // Timer tick: update active timer display every 15 seconds
+  setInterval(()=>{
+    if (state.activeLogId && ui.navStack[0]?.view === "logs" && ui.navStack.length === 1){
+      const elapsedEl = document.querySelector(".timer-active-elapsed");
+      const metaEl = document.querySelector(".timer-active-meta");
+      if (elapsedEl){
+        const active = state.logs.find(l => l.id === state.activeLogId);
+        if (active){
+          elapsedEl.textContent = durMsToHM(sumWorkMs(active));
+          const isPaused = currentOpenSegment(active)?.type === "break";
+          if (metaEl) metaEl.textContent = `${isPaused ? "Pauze" : "Actief"} · gestart ${fmtClock(active.createdAt)}`;
+        }
       }
     }
-  }
-}, 15000);
+  }, 15000);
+} catch (err) {
+  const message = err instanceof Error ? err.message : String(err || "Onbekende fout");
+  document.body.innerHTML = `<div style="padding:40px;color:white;">Fout bij opstarten: ${message}<br><button onclick="location.reload()">Herlaad</button></div>`;
+}
